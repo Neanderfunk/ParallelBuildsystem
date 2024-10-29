@@ -6,13 +6,11 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-
 abort ()
 {
   echo >&2 && echo "Error in script \"$0\": $*" >&2
   exit 1
 }
-
 
 replace_string_in_files ()
 {
@@ -22,7 +20,6 @@ replace_string_in_files ()
 
   find "$DIR" -type f -print0 | xargs -0 sed -i "s;$STRING_TO_REPLACE;$REPLACEMENT_STRING;g"
 }
-
 
 read_uptime_as_integer ()
 {
@@ -48,7 +45,6 @@ read_uptime_as_integer ()
 
   UPTIME=${BASH_REMATCH[1]}
 }
-
 
 get_human_friendly_elapsed_time ()
 {
@@ -388,9 +384,9 @@ build_all_images ()
     TARGETS+=( ar71xx-nand )
     TARGETS+=( ar71xx-mikrotik )
     TARGETS+=( ath79-generic )
-######   TARGETS+=( brcm2708-bcm2708 )
-######   TARGETS+=( brcm2708-bcm2709 )
-######   TARGETS+=( brcm2708-bcm2710 )
+#######   TARGETS+=( brcm2708-bcm2708 )
+#######   TARGETS+=( brcm2708-bcm2709 )
+#######   TARGETS+=( brcm2708-bcm2710 )
     TARGETS+=( mvebu-cortexa9 )
     TARGETS+=( ipq40xx-generic )
     TARGETS+=( ipq806x-generic )
@@ -405,9 +401,10 @@ build_all_images ()
     TARGETS+=( x86-generic )
     TARGETS+=( x86-geode )
     TARGETS+=( x86-64 )
-##    TARGETS+=( x86-legacy )
+###    TARGETS+=( x86-legacy )
     TARGETS+=( ramips-mt7621 )
     ADD_MI4G=false     
+    ADD_MI4G=true     
 ##    TARGETS+=( rockchip-armv8 )
    fi
 
