@@ -321,10 +321,10 @@ build_images_for_site ()
 #      GLUONDEVICES+="xiaomi-mi-router-4a-gigabit-edition"
 #     else 
 #      # unset GLUONDEVICES
-#      GLUONDEVICES=""
+      GLUONDEVICES=""
 #     fi
-
     echo "Site prepare.sh  $TARGET $GLUONDEVICES"
+
     "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" $TARGET $GLUONDEVICES
 #    "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh"
 
