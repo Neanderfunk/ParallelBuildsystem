@@ -82,12 +82,11 @@ get_site_log_filename ()
 }
 MAKECLEAN=false
 GITRESET=false
-MAKECLEAN=true
-GITRESET=true
+#MAKECLEAN=true
+#GITRESET=true
 #SBRANCH="$(date +%Y%m%d%H%M)"
 SBRANCH="$(date +%y%m%d%H)$(cat $1|grep -v ^#|head -1|cut -c1-3)"  
-SBRANCH="24111112sta"
-#SBRANCH="24041622"
+#SBRANCH="24111112sta"
 SITECODE_BEFORE="coldstart"
 FIRSTSITE=true
 FIRSTRUN=true
@@ -317,12 +316,13 @@ build_images_for_site ()
       SITECODE_BEFORE=$SITE_CODE
     done 
     # GLUON_DEVICES="avm-fritz-box-4020 tp-link-tl-wdr4300-v1"
-    if [ "$TARGETS" == "ramips-mt7621" ] && [ "$ADD_MI4G" == true ] ; then
-      GLUONDEVICES+="xiaomi-mi-router-4a-gigabit-edition"
-     else 
-      # unset GLUONDEVICES
-      GLUONDEVICES=""
-     fi
+## remains from gluon2021.x patches
+#    if [ "$TARGETS" == "ramips-mt7621" ] && [ "$ADD_MI4G" == true ] ; then
+#      GLUONDEVICES+="xiaomi-mi-router-4a-gigabit-edition"
+#     else 
+#      # unset GLUONDEVICES
+#      GLUONDEVICES=""
+#     fi
 
     echo "Site prepare.sh  $TARGET $GLUONDEVICES"
     "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" $TARGET $GLUONDEVICES
@@ -381,33 +381,31 @@ build_all_images ()
 {
   local -a TARGETS=("$@")
   if (( ${#TARGETS[@]} == 0 )); then
-#    TARGETS+=( ar71xx-tiny )
-#    TARGETS+=( ar71xx-generic )
-#    TARGETS+=( ar71xx-nand )
-#    TARGETS+=( ar71xx-mikrotik )
 #    TARGETS+=( ath79-generic )
-#########   TARGETS+=( brcm2708-bcm2708 )
-#########   TARGETS+=( brcm2708-bcm2709 )
-#########   TARGETS+=( brcm2708-bcm2710 )
-#    TARGETS+=( mvebu-cortexa9 )
+#    TARGETS+=( ath79-nand )
+#    TARGETS+=( ath79-mikrotik ) 
+##    TARGETS+=( bcm27xx-bcm2708 ) 
+##    TARGETS+=( bcm27xx-bcm2709 )
 #    TARGETS+=( ipq40xx-generic )
+#    TARGETS+=( ipq40xx-mikrotik )
 #    TARGETS+=( ipq806x-generic )
 #    TARGETS+=( lantiq-xrx200 )
 #    TARGETS+=( lantiq-xway )
-#    TARGETS+=( mpc85xx-generic )
-#    TARGETS+=( mpc85xx-p1020 )
+#    TARGETS+=( mediatek-mt7622 ) 
+#    TARGETS+=( mpc85xx-p1010 )
+#    TARGETS+=( mpc85xx-p1020)
 #    TARGETS+=( ramips-mt7620 )
-#    TARGETS+=( ramips-mt76x8 )
-#    TARGETS+=( ramips-rt305x )
-#    TARGETS+=( sunxi-cortexa7 )
-#    TARGETS+=( x86-generic )
-#    TARGETS+=( x86-geode )
-#    TARGETS+=( x86-64 )
-#####    TARGETS+=( x86-legacy )
     TARGETS+=( ramips-mt7621 )
-#    ADD_MI4G=false     
-    ADD_MI4G=true     
+#    TARGETS+=( ramips-mt76x8 )
+##    TARGETS+=( realtek-rtl838x )
 ##    TARGETS+=( rockchip-armv8 )
+##    TARGETS+=( sunxi-cortexa7 )
+##    TARGETS+=( x86-generic )
+##    TARGETS+=( x86-geode )
+##    TARGETS+=( x86-legacy )
+    TARGETS+=( x86-64 )
+##    TARGETS+=( bcm27xx-bcm2710 )
+##    TARGETS+=( mvebu-cortexa9 )
    fi
 
   pushd "$GLUON_DIR" >/dev/null
