@@ -403,7 +403,7 @@ build_all_images ()
 ##    TARGETS+=( x86-generic )
 ##    TARGETS+=( x86-geode )
 ##    TARGETS+=( x86-legacy )
-    TARGETS+=( x86-64 )
+#    TARGETS+=( x86-64 )
 ##    TARGETS+=( bcm27xx-bcm2710 )
 ##    TARGETS+=( mvebu-cortexa9 )
    fi
