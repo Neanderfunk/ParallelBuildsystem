@@ -381,7 +381,7 @@ build_all_images ()
 {
   local -a TARGETS=("$@")
   if (( ${#TARGETS[@]} == 0 )); then
-#    TARGETS+=( ath79-generic )
+    TARGETS+=( ath79-generic )
 #    TARGETS+=( ath79-nand )
 #    TARGETS+=( ath79-mikrotik ) 
 ####    TARGETS+=( bcm27xx-bcm2708 ) 
