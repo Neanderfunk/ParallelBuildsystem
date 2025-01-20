@@ -86,7 +86,7 @@ GITRESET=false
 #GITRESET=true
 #SBRANCH="$(date +%Y%m%d%H%M)"
 SBRANCH="$(date +%y%m%d%H)$(cat $1|grep -v ^#|head -1|cut -c1-3)"  
-SBRANCH="25010903sta"
+SBRANCH="25011906bro"
 SITECODE_BEFORE="coldstart"
 FIRSTSITE=true
 FIRSTRUN=true
@@ -381,31 +381,38 @@ build_all_images ()
 {
   local -a TARGETS=("$@")
   if (( ${#TARGETS[@]} == 0 )); then
-#    TARGETS+=( ath79-generic )
-#    TARGETS+=( ath79-nand )
-#    TARGETS+=( ath79-mikrotik ) 
-######    TARGETS+=( bcm27xx-bcm2708 ) 
-#    TARGETS+=( bcm27xx-bcm2709 )
-#    TARGETS+=( ipq40xx-generic )
-#    TARGETS+=( ipq40xx-mikrotik )
-#    TARGETS+=( ipq806x-generic )
-#    TARGETS+=( lantiq-xrx200 )
-#    TARGETS+=( lantiq-xway )
-#    TARGETS+=( mediatek-mt7622 ) 
-#    TARGETS+=( mpc85xx-p1010 )
-#    TARGETS+=( mpc85xx-p1020)
-#    TARGETS+=( ramips-mt7620 )
-#    TARGETS+=( ramips-mt7621 )
-#    TARGETS+=( ramips-mt76x8 )
-#    TARGETS+=( realtek-rtl838x )
-#    TARGETS+=( rockchip-armv8 )
-#    TARGETS+=( sunxi-cortexa7 )
-#    TARGETS+=( x86-generic )
+    TARGETS+=( armsr-armv7 )
+    TARGETS+=( armsr-armv8 )
+    TARGETS+=( ath79-generic )
+    TARGETS+=( ath79-nand )
+    TARGETS+=( ath79-mikrotik ) 
+#####    TARGETS+=( bcm27xx-bcm2708 ) 
+    TARGETS+=( bcm27xx-bcm2709 )
+    TARGETS+=( ipq40xx-generic )
+    TARGETS+=( ipq40xx-mikrotik )
+    TARGETS+=( ipq806x-generic )
+    TARGETS+=( lantiq-xrx200 )
+    TARGETS+=( lantiq-xway )
+    TARGETS+=( mediatek-filogic )
+    TARGETS+=( mediatek-mt7622 ) 
+    TARGETS+=( mpc85xx-p1010 )
+    TARGETS+=( mpc85xx-p1020)
+    TARGETS+=( ramips-mt7620 )
+    TARGETS+=( ramips-mt7621 )
+    TARGETS+=( ramips-mt76x8 )
+    TARGETS+=( realtek-rtl838x )
+    TARGETS+=( rockchip-armv8 )
+    TARGETS+=( sunxi-cortexa7 )
+    TARGETS+=( x86-generic )
 ####    TARGETS+=( x86-geode )
 ####    TARGETS+=( x86-legacy )
     TARGETS+=( x86-64 )
-#    TARGETS+=( bcm27xx-bcm2710 )
-#    TARGETS+=( mvebu-cortexa9 )
+    TARGETS+=( bcm27xx-bcm2710 )
+    TARGETS+=( bcm27xx-bcm2711 ) 
+    TARGETS+=( mvebu-cortexa9 )
+    TARGETS+=( ipq40xx-chromium))
+    TARGETS+=( ipq807x-generic))
+
    fi
 
   pushd "$GLUON_DIR" >/dev/null
