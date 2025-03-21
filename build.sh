@@ -412,7 +412,7 @@ build_all_images ()
     TARGETS+=( mvebu-cortexa9 )
     TARGETS+=( ipq40xx-chromium)
     TARGETS+=( ipq807x-generic)
-
+#
    fi
 
   pushd "$GLUON_DIR" >/dev/null
