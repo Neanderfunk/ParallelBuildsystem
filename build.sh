@@ -85,7 +85,7 @@ GITRESET=false
 #MAKECLEAN=true
 #GITRESET=true
 #SBRANCH="$(date +%Y%m%d%H%M)"
-SBRANCH="$(date +%y%m%d%H)$(cat $1|grep -v ^#|head -1|cut -c1-3)"  
+SBRANCH="$(date +%y%m%d%H)$(cat $1|grep -v ^#|head -1|cut -c1-3)"
 SBRANCH="26030610sta"
 SITECODE_BEFORE="coldstart"
 FIRSTSITE=true
@@ -133,39 +133,39 @@ generate_site_config ()
   mkdir -p "assembled/$TEMPLATE_NAME"
   cp -r -L "templates/$TEMPLATE_NAME" "$DIR"
 
-  replace_string_in_files "$DIR" SBRANCH   	  "$SBRANCH"
+  replace_string_in_files "$DIR" SBRANCH          "$SBRANCH"
   replace_string_in_files "$DIR" RELBRANCH        "$RELBRANCH"
-  replace_string_in_files "$DIR" GLUONBRANCH  	  "$GLUONBRANCH"
-  replace_string_in_files "$DIR" SITECODE    	  "$SITE_CODE"
-  replace_string_in_files "$DIR" DOMAINNR    	  "$DOMAIN_NR"
-  replace_string_in_files "$DIR" SITESMALL  	  "$SITE_SMALL"
-  replace_string_in_files "$DIR" SITEBIG  	  "$SITE_BIG"
-  replace_string_in_files "$DIR" FFPREFIX 	  "$FF_PREFIX"
-  replace_string_in_files "$DIR" METAPREFIX 	  "$META_PREFIX"
-  replace_string_in_files "$DIR" MESHSSID 	  "$MESH_SSID"
+  replace_string_in_files "$DIR" GLUONBRANCH      "$GLUONBRANCH"
+  replace_string_in_files "$DIR" SITECODE         "$SITE_CODE"
+  replace_string_in_files "$DIR" DOMAINNR         "$DOMAIN_NR"
+  replace_string_in_files "$DIR" SITESMALL        "$SITE_SMALL"
+  replace_string_in_files "$DIR" SITEBIG          "$SITE_BIG"
+  replace_string_in_files "$DIR" FFPREFIX         "$FF_PREFIX"
+  replace_string_in_files "$DIR" METAPREFIX       "$META_PREFIX"
+  replace_string_in_files "$DIR" MESHSSID         "$MESH_SSID"
   replace_string_in_files "$DIR" DOMAINNAME       "$(echo $DOMAIN_NAME|sed -e 's/_/\ /g')"
   replace_string_in_files "$DIR" SUPERNODEDEFAULT "$SUPERNODE_DEFAULT"
-  replace_string_in_files "$DIR" V4PREFIX 	  "$V4_PREFIX"
-  replace_string_in_files "$DIR" V6PREFIX 	  "$V6_PREFIX"
-  replace_string_in_files "$DIR" WIFICH24 	  "$WIFICH_24"
-  replace_string_in_files "$DIR" WIFICH5 	  "$WIFICH_5"
-  replace_string_in_files "$DIR" MAPLAT 	  "$MAP_LAT"
-  replace_string_in_files "$DIR" MAPLON 	  "$MAP_LON"
-  replace_string_in_files "$DIR" MAPZOOM 	  "$MAP_ZOOM"
-  replace_string_in_files "$DIR" DOMAINHASH 	  "$DOMAIN_HASH"
-  replace_string_in_files "$DIR" METANAME	  "$(echo $META_NAME|sed -e 's/_/\ /g')"
-  replace_string_in_files "$DIR" METAWEBSITE 	  "$META_WEBSITE"
-  replace_string_in_files "$DIR" MAPWEBSITE 	  "$MAP_WEBSITE"
-  replace_string_in_files "$DIR" FWWEBSITEHOST 	  "$FWWEBSITE_HOST"
-  replace_string_in_files "$DIR" FWWEBSITETLD	  "$FWWEBSITE_TLD"
+  replace_string_in_files "$DIR" V4PREFIX         "$V4_PREFIX"
+  replace_string_in_files "$DIR" V6PREFIX         "$V6_PREFIX"
+  replace_string_in_files "$DIR" WIFICH24         "$WIFICH_24"
+  replace_string_in_files "$DIR" WIFICH5          "$WIFICH_5"
+  replace_string_in_files "$DIR" MAPLAT           "$MAP_LAT"
+  replace_string_in_files "$DIR" MAPLON           "$MAP_LON"
+  replace_string_in_files "$DIR" MAPZOOM          "$MAP_ZOOM"
+  replace_string_in_files "$DIR" DOMAINHASH       "$DOMAIN_HASH"
+  replace_string_in_files "$DIR" METANAME         "$(echo $META_NAME|sed -e 's/_/\ /g')"
+  replace_string_in_files "$DIR" METAWEBSITE      "$META_WEBSITE"
+  replace_string_in_files "$DIR" MAPWEBSITE       "$MAP_WEBSITE"
+  replace_string_in_files "$DIR" FWWEBSITEHOST    "$FWWEBSITE_HOST"
+  replace_string_in_files "$DIR" FWWEBSITETLD     "$FWWEBSITE_TLD"
   replace_string_in_files "$DIR" OPKGFQDN         "$OPKG_FQDN"
-  replace_string_in_files "$DIR" SUPERNODETLD	  "$SUPERNODE_TLD"
-  replace_string_in_files "$DIR" DOMAINREGIONDE	  "$(echo $DOMAIN_REGION_DE|sed -e 's/_/\ /g')"
-  replace_string_in_files "$DIR" DOMAINREGIONEN	  "$(echo $DOMAIN_REGION_EN|sed -e 's/_/\ /g')"
-  replace_string_in_files "$DIR" SETUPSKIP	  "$SETUP_SKIP"
-  replace_string_in_files "$DIR" KEYFILESIGN 	  "$(cat buildkeys/$KEY_FILE_SIGN|sed ':a;N;$!ba;s/\n/\\n/g')" 
-  replace_string_in_files "$DIR" KEYFILESSH 	  "$(cat buildkeys/$KEY_FILE_SSH|sed ':a;N;$!ba;s/\n/\\n/g')"
-  replace_string_in_files "$DIR" DOMAINLONGNAME	  "$(echo $DOMAIN_LONGNAME|sed -e 's/_/\ /g')"
+  replace_string_in_files "$DIR" SUPERNODETLD     "$SUPERNODE_TLD"
+  replace_string_in_files "$DIR" DOMAINREGIONDE   "$(echo $DOMAIN_REGION_DE|sed -e 's/_/\ /g')"
+  replace_string_in_files "$DIR" DOMAINREGIONEN   "$(echo $DOMAIN_REGION_EN|sed -e 's/_/\ /g')"
+  replace_string_in_files "$DIR" SETUPSKIP        "$SETUP_SKIP"
+  replace_string_in_files "$DIR" KEYFILESIGN      "$(cat buildkeys/$KEY_FILE_SIGN|sed ':a;N;$!ba;s/\n/\\n/g')"
+  replace_string_in_files "$DIR" KEYFILESSH       "$(cat buildkeys/$KEY_FILE_SSH|sed ':a;N;$!ba;s/\n/\\n/g')"
+  replace_string_in_files "$DIR" DOMAINLONGNAME   "$(echo $DOMAIN_LONGNAME|sed -e 's/_/\ /g')"
 
   # Create the log file, or truncate it if it already exists.
   get_site_log_filename  "$TEMPLATE_NAME"  "$SITE_CODE"
@@ -182,39 +182,38 @@ generate_all_site_configs ()
   local -i  index
   for (( index=0; index < ${#ALL_SITE_RELBRANCHES[@]}; index += 1 )); do
     generate_site_config "${ALL_SITE_RELBRANCHES[$index]}" \
-    			 "${ALL_SITE_GLUON_BRANCHES[$index]}" \
-                         "${ALL_SITE_TEMPLATE_NAMES[$index]}" \
-                         "${ALL_SITE_CODES[$index]}" \
-			 "${ALL_SITE_DOMAIN_NRS[$index]}" \
-			 "${ALL_SITE_SITE_SMALLS[$index]}" \
-			 "${ALL_SITE_SITE_BIGS[$index]}" \
-			 "${ALL_SITE_FF_PREFIXS[$index]}" \
-			 "${ALL_SITE_META_PREFIXS[$index]}" \
-			 "${ALL_SITE_MESH_SSIDS[$index]}" \
-			 "${ALL_SITE_DOMAIN_NAMES[$index]}" \
-			 "${ALL_SITE_SUPERNODE_DEFAULTS[$index]}" \
-			 "${ALL_SITE_V4_PREFIXS[$index]}" \
-			 "${ALL_SITE_V6_PREFIXS[$index]}" \
-			 "${ALL_SITE_WIFICH_24S[$index]}" \
-			 "${ALL_SITE_WIFICH_5S[$index]}" \
-			 "${ALL_SITE_MAP_LATS[$index]}" \
-			 "${ALL_SITE_MAP_LONS[$index]}" \
-			 "${ALL_SITE_MAP_ZOOMS[$index]}" \
-			 "${ALL_SITE_DOMAIN_HASHS[$index]}" \
-			 "${ALL_SITE_META_NAMES[$index]}" \
-			 "${ALL_SITE_META_WEBSITES[$index]}" \
-			 "${ALL_SITE_MAP_WEBSITES[$index]}" \
-			 "${ALL_SITE_FWWEBSITE_HOSTS[$index]}" \
-			 "${ALL_SITE_FWWEBSITE_TLDS[$index]}" \
-			 "${ALL_SITE_OPKG_FQDNS[$index]}" \
-			 "${ALL_SITE_SUPERNODE_TLDS[$index]}" \
-			 "${ALL_SITE_DOMAIN_REGION_DES[$index]}" \
-			 "${ALL_SITE_DOMAIN_REGION_ENS[$index]}" \
-			 "${ALL_SITE_SETUP_SKIPS[$index]}" \
-			 "${ALL_SITE_KEY_FILE_SIGNS[$index]}" \
-			 "${ALL_SITE_KEY_FILE_SSHS[$index]}" \
-			 "${ALL_SITE_DOMAIN_LONGNAMES[$index]}" 
-                        
+                          "${ALL_SITE_GLUON_BRANCHES[$index]}" \
+                          "${ALL_SITE_TEMPLATE_NAMES[$index]}" \
+                          "${ALL_SITE_CODES[$index]}" \
+                          "${ALL_SITE_DOMAIN_NRS[$index]}" \
+                          "${ALL_SITE_SITE_SMALLS[$index]}" \
+                          "${ALL_SITE_SITE_BIGS[$index]}" \
+                          "${ALL_SITE_FF_PREFIXS[$index]}" \
+                          "${ALL_SITE_META_PREFIXS[$index]}" \
+                          "${ALL_SITE_MESH_SSIDS[$index]}" \
+                          "${ALL_SITE_DOMAIN_NAMES[$index]}" \
+                          "${ALL_SITE_SUPERNODE_DEFAULTS[$index]}" \
+                          "${ALL_SITE_V4_PREFIXS[$index]}" \
+                          "${ALL_SITE_V6_PREFIXS[$index]}" \
+                          "${ALL_SITE_WIFICH_24S[$index]}" \
+                          "${ALL_SITE_WIFICH_5S[$index]}" \
+                          "${ALL_SITE_MAP_LATS[$index]}" \
+                          "${ALL_SITE_MAP_LONS[$index]}" \
+                          "${ALL_SITE_MAP_ZOOMS[$index]}" \
+                          "${ALL_SITE_DOMAIN_HASHS[$index]}" \
+                          "${ALL_SITE_META_NAMES[$index]}" \
+                          "${ALL_SITE_META_WEBSITES[$index]}" \
+                          "${ALL_SITE_MAP_WEBSITES[$index]}" \
+                          "${ALL_SITE_FWWEBSITE_HOSTS[$index]}" \
+                          "${ALL_SITE_FWWEBSITE_TLDS[$index]}" \
+                          "${ALL_SITE_OPKG_FQDNS[$index]}" \
+                          "${ALL_SITE_SUPERNODE_TLDS[$index]}" \
+                          "${ALL_SITE_DOMAIN_REGION_DES[$index]}" \
+                          "${ALL_SITE_DOMAIN_REGION_ENS[$index]}" \
+                          "${ALL_SITE_SETUP_SKIPS[$index]}" \
+                          "${ALL_SITE_KEY_FILE_SIGNS[$index]}" \
+                          "${ALL_SITE_KEY_FILE_SSHS[$index]}" \
+                          "${ALL_SITE_DOMAIN_LONGNAMES[$index]}"
   done
 
   echo "Finished generating sites."
@@ -240,20 +239,20 @@ build_images_for_site ()
 
   local ARGS=""
 
-  append_quoted_arg  ARGS  GLUON_SITEDIR   "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
-  append_quoted_arg  ARGS  GLUON_IMAGEDIR  "$SANDBOX_DIR/images/running/$TEMPLATE_NAME/$SITE_CODE"
-  append_quoted_arg  ARGS  GLUON_MODULEDIR "$SANDBOX_DIR/gluon/output/modules"
+  append_quoted_arg  ARGS  GLUON_SITEDIR    "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
+  append_quoted_arg  ARGS  GLUON_IMAGEDIR   "$SANDBOX_DIR/images/running/$TEMPLATE_NAME/$SITE_CODE"
+  append_quoted_arg  ARGS  GLUON_MODULEDIR  "$SANDBOX_DIR/gluon/output/modules"
   append_quoted_arg  ARGS  GLUON_PACKAGEDIR "$SANDBOX_DIR/gluon/output/packages"
   append_quoted_arg  ARGS  GLUON_SITE_VERSION $(date +%Y%m%d)
- # For the Gluon build system, BROKEN=1 means "use the experimental/unstable branch".
+  # For the Gluon build system, BROKEN=1 means "use the experimental/unstable branch".
   append_quoted_arg  ARGS  BROKEN "1"
 
-#  verbose logs
-#  append_quoted_arg  ARGS  v "s"
-#  append_quoted_arg  ARGS BUILD_LOG "1"
+  # verbose logs
+  # append_quoted_arg  ARGS  v "s"
+  # append_quoted_arg  ARGS BUILD_LOG "1"
 
   # Setting GLUON_BRANCH enables the firmware autoupdater.
-  append_quoted_arg  ARGS GLUON AUTOUPDATER_ENABLED=1 
+  append_quoted_arg  ARGS GLUON AUTOUPDATER_ENABLED=1
   append_quoted_arg  ARGS GLUON_AUTOUPDATER_BRANCH "$RELBRANCH"
   append_quoted_arg  ARGS GLUON_BRANCH "$RELBRANCH"
 
@@ -279,32 +278,32 @@ build_images_for_site ()
 
     for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
       TARGET="${TARGETS[target_index]}"
-#      if [ "$SITE_CODE" != "$SITECODE_BEFORE" ] && [ "$MAKECLEAN" = true ] ; then
+      # if [ "$SITE_CODE" != "$SITECODE_BEFORE" ] && [ "$MAKECLEAN" = true ] ; then
       if [ "$GITRESET" = true ] && [ "$FIRSTRUN" = true ] ; then
         echo "GitReset firmware for site code: $SITE_CODE, target: $TARGET ..."
         rm -rf .git/rebase-apply
-#        git clean -xfd
-#        git submodule foreach --recursive git clean -xfd
+        # git clean -xfd
+        # git submodule foreach --recursive git clean -xfd
         git reset --hard origin/$GLUONBRANCH
         git submodule foreach --recursive git reset --hard
-#        git submodule update --init --recursive
+        # git submodule update --init --recursive
         if [ -d "openwrt" ]; then
           pushd openwrt
-#         git clean -xfd
-#         git submodule foreach --recursive git clean -xfd
-          git reset --hard 
+          # git clean -xfd
+          # git submodule foreach --recursive git clean -xfd
+          git reset --hard
           git submodule foreach --recursive git reset --hard
-#          git submodule update --init --recursive
+          # git submodule update --init --recursive
           popd
-         else
-#          make update GLUON_TARGET=ar71xx-tiny   GLUON_SITEDIR=/home/build/firmware2021.x/firmware/assembled/43_bggl/43_bggl GLUON_IMAGEDIR=/home/build/firmware2021.x/firmware/images/running/43_bggl/43_bggl GLUON_MODULEDIR=/home/build/firmware2021.x/firmware/gluon/output/modules GLUON_PACKAGEDIR=/home/build/firmware2021.x/firmware/gluon/output/packages GLUON_SITE_VERSION=20241009 BROKEN=1 GLUON=AUTOUPDATER_ENABLED=1 GLUON_AUTOUPDATER_BRANCH=stable GLUON_BRANCH=stable
+        else
+          # make update GLUON_TARGET=ar71xx-tiny   GLUON_SITEDIR=/home/build/firmware2021.x/firmware/assembled/43_bggl/43_bggl GLUON_IMAGEDIR=/home/build/firmware2021.x/firmware/images/running/43_bggl/43_bggl GLUON_MODULEDIR=/home/build/firmware2021.x/firmware/gluon/output/modules GLUON_PACKAGEDIR=/home/build/firmware2021.x/firmware/gluon/output/packages GLUON_SITE_VERSION=20241009 BROKEN=1 GLUON=AUTOUPDATER_ENABLED=1 GLUON_AUTOUPDATER_BRANCH=stable GLUON_BRANCH=stable
           echo "Make update for site code: $SITE_CODE, target: $TARGET ..."
           printf -v MAKE_CMD  "make update GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
           echo "$MAKE_CMD"
           eval "$MAKE_CMD"
-         fi
+        fi
         FIRSTRUN=false
-       fi
+      fi
       SITECODE_BEFORE=$SITE_CODE
       if [ "$MAKECLEAN" = true ] && [ "$FIRSTSITE" = true ] ; then
         echo "Cleaning the firmware for site code: $SITE_CODE, target: $TARGET ..."
@@ -312,21 +311,21 @@ build_images_for_site ()
         echo "$MAKE_CMD"
         eval "$MAKE_CMD"
         FIRSTSITE=false
-       fi
+      fi
       SITECODE_BEFORE=$SITE_CODE
-    done 
+    done
     # GLUON_DEVICES="avm-fritz-box-4020 tp-link-tl-wdr4300-v1"
-## remains from gluon2021.x patches
-#    if [ "$TARGETS" == "ramips-mt7621" ] && [ "$ADD_MI4G" == true ] ; then
-#      GLUONDEVICES+="xiaomi-mi-router-4a-gigabit-edition"
-#     else 
-#      # unset GLUONDEVICES
-      GLUONDEVICES=""
-#     fi
+    ## remains from gluon2021.x patches
+    # if [ "$TARGETS" == "ramips-mt7621" ] && [ "$ADD_MI4G" == true ] ; then
+    #   GLUONDEVICES+="xiaomi-mi-router-4a-gigabit-edition"
+    # else
+    #   # unset GLUONDEVICES
+    GLUONDEVICES=""
+    # fi
     echo "Site prepare.sh  $TARGET $GLUONDEVICES"
 
     "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" $TARGET $GLUONDEVICES
-#    "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh"
+    # "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh"
 
     echo "Gluon make update..."
     printf -v MAKE_CMD "make update %s"  "$ARGS"
@@ -336,8 +335,8 @@ build_images_for_site ()
 
   local MAKE_J_VAL
   MAKE_J_VAL="$(( $(getconf _NPROCESSORS_ONLN) * 2 ))"
-# only 1 cpu core to use
-#  MAKE_J_VAL=1
+  # only 1 cpu core to use
+  # MAKE_J_VAL=1
   for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
     TARGET="${TARGETS[target_index]}"
 
@@ -351,7 +350,7 @@ build_images_for_site ()
     if [ ! -z "$GLUONDEVICES" ] && [ "${#GLUONDEVICES}" -gt 1 ]; then
       MAKE_CMD+=" GLUON_DEVICES=$GLUONDEVICES "
       echo "for GLUONDEVICEs $GLUONDEVICES"
-     fi
+    fi
     echo "$MAKE_CMD"
     eval "$MAKE_CMD"
   done
@@ -362,8 +361,8 @@ build_images_for_site ()
   printf -v MAKE_CMD "make manifest %s"  "$ARGS"
   echo "$MAKE_CMD"
   eval "$MAKE_CMD"
-  
-  printf -v SIGN_CMD "$SANDBOX_DIR/esign $SIGN_ARGS" 
+
+  printf -v SIGN_CMD "$SANDBOX_DIR/esign $SIGN_ARGS"
   echo "$SIGN_CMD"
   eval "$SIGN_CMD"
 
@@ -385,8 +384,8 @@ build_all_images ()
     TARGETS+=( armsr-armv8 )
     TARGETS+=( ath79-generic )
     TARGETS+=( ath79-nand )
-    TARGETS+=( ath79-mikrotik ) 
-#######    TARGETS+=( bcm27xx-bcm2708 ) 
+    TARGETS+=( ath79-mikrotik )
+    ####### TARGETS+=( bcm27xx-bcm2708 )
     TARGETS+=( bcm27xx-bcm2709 )
     TARGETS+=( ipq40xx-generic )
     TARGETS+=( ipq40xx-mikrotik )
@@ -394,9 +393,9 @@ build_all_images ()
     TARGETS+=( lantiq-xrx200 )
     TARGETS+=( lantiq-xway )
     TARGETS+=( mediatek-filogic )
-    TARGETS+=( mediatek-mt7622 ) 
+    TARGETS+=( mediatek-mt7622 )
     TARGETS+=( mpc85xx-p1010 )
-    TARGETS+=( mpc85xx-p1020)
+    TARGETS+=( mpc85xx-p1020 )
     TARGETS+=( ramips-mt7620 )
     TARGETS+=( ramips-mt7621 )
     TARGETS+=( ramips-mt76x8 )
@@ -404,16 +403,16 @@ build_all_images ()
     TARGETS+=( rockchip-armv8 )
     TARGETS+=( sunxi-cortexa7 )
     TARGETS+=( x86-generic )
-####    TARGETS+=( x86-geode )
-####    TARGETS+=( x86-legacy )
+    #### TARGETS+=( x86-geode )
+    #### TARGETS+=( x86-legacy )
     TARGETS+=( x86-64 )
     TARGETS+=( bcm27xx-bcm2710 )
-    TARGETS+=( bcm27xx-bcm2711 ) 
+    TARGETS+=( bcm27xx-bcm2711 )
     TARGETS+=( mvebu-cortexa9 )
     TARGETS+=( ipq40xx-chromium )
     TARGETS+=( ipq807x-generic )
 
-   fi
+  fi
 
   pushd "$GLUON_DIR" >/dev/null
   echo "Git fetching..."
@@ -431,9 +430,9 @@ build_all_images ()
 
     {
       build_images_for_site "${ALL_SITE_RELBRANCHES[$index]}" \
-                            "${ALL_SITE_TEMPLATE_NAMES[$index]}" \
-                            "${ALL_SITE_CODES[$index]}" \
-                            "${ALL_SITE_GLUON_BRANCHES[$index]}"
+                             "${ALL_SITE_TEMPLATE_NAMES[$index]}" \
+                             "${ALL_SITE_CODES[$index]}" \
+                             "${ALL_SITE_GLUON_BRANCHES[$index]}"
     } 2>&1 | tee --append -- "$LOG_FILENAME"
 
     # The whole build takes a long time. By recording the build time for each site,
@@ -459,17 +458,17 @@ build_all_images ()
   mv "./images/running" "./images/images-$DATE_SUFFIX"
 
   # I do not think that we build any modules yet.
-#  echo check for modules
-#  if [ -d "./gluon/output/modules" ]; then
-#    ARE_THERE_MODULES=true
-#  else
-#    ARE_THERE_MODULES=false
-#  fi
-#  if $ARE_THERE_MODULES; then
-#    echo moving modules-dir $SANDBOX_DIR/gluon/output/modules
-#    mv "$SANDBOX_DIR/gluon/output/modules" "$SANDBOX_DIR/images-$DATE_SUFFIX/."
-#   fi
-  
+  # echo check for modules
+  # if [ -d "./gluon/output/modules" ]; then
+  #   ARE_THERE_MODULES=true
+  # else
+  #   ARE_THERE_MODULES=false
+  # fi
+  # if $ARE_THERE_MODULES; then
+  #   echo moving modules-dir $SANDBOX_DIR/gluon/output/modules
+  #   mv "$SANDBOX_DIR/gluon/output/modules" "$SANDBOX_DIR/images-$DATE_SUFFIX/."
+  # fi
+
   echo check for packages wich are actual modules
   if [ -d "./gluon/output/packages" ]; then
     ARE_THERE_PACKAGES=true
@@ -479,21 +478,21 @@ build_all_images ()
   if $ARE_THERE_PACKAGES; then
     echo moving packages-dir $SANDBOX_DIR/gluon/output/packages
     mv "$SANDBOX_DIR/gluon/output/packages" "$SANDBOX_DIR/images/images-$DATE_SUFFIX/."
-   fi
+  fi
 
   echo "Finished building images:"
   echo "- Images  dir: images-$DATE_SUFFIX"
-#  if $ARE_THERE_MODULES; then
-#    echo "- Modules dir: modules-$DATE_SUFFIX/modules"
-#   fi
+  # if $ARE_THERE_MODULES; then
+  #   echo "- Modules dir: modules-$DATE_SUFFIX/modules"
+  # fi
   if $ARE_THERE_PACKAGES; then
     echo "- Packages dir: modules-$DATE_SUFFIX/packages"
-   fi
+  fi
 }
 
 
 declare -a ALL_SITE_RELBRANCHES=()
-declare -a ALL_SITE_GLUON_BRANCHES=()  
+declare -a ALL_SITE_GLUON_BRANCHES=()
 declare -a ALL_SITE_TEMPLATE_NAMES=()
 declare -a ALL_SITE_CODES=()
 declare -a ALL_SITE_DOMAIN_NRS=()
