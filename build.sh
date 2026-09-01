@@ -80,16 +80,115 @@ get_site_log_filename ()
 
   LOG_FILENAME="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/build.log"
 }
-MAKECLEAN=false
-GITRESET=false
-#MAKECLEAN=true
-#GITRESET=true
-#SBRANCH="$(date +%Y%m%d%H%M)"
-SBRANCH="$(date +%y%m%d%H)$(cat $1|grep -v ^#|head -1|cut -c1-3)"
-SBRANCH="26030610sta"
 SITECODE_BEFORE="coldstart"
 FIRSTSITE=true
 FIRSTRUN=true
+
+# Default values for every setting that build.conf may override. They are
+# defined here so that build.sh still runs if no configuration file exists.
+set_config_defaults ()
+{
+  SBRANCH_MODE="date"
+  SBRANCH_FIXED=""
+
+  MAKECLEAN=false
+  GITRESET=false
+
+  MAKE_J_VAL=0
+  MAKE_J_FACTOR=2
+
+  BROKEN=1
+  AUTOUPDATER_ENABLED=true
+  VERBOSE_BUILD=true
+  BUILD_LOG=false
+  GLUON_SITE_VERSION="$(date +%Y%m%d)"
+  GLUONDEVICES=""
+  SIGNKEY_FILE="untrustworthy-buildbot-signkey.priv"
+
+  DATE_SUFFIX_FORMAT="+%s"
+  SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
+
+  GLUON_TARGETS=()
+}
+
+# Reads the configuration files. Later sources override earlier ones:
+# built-in defaults, then build.conf (or $BUILD_CONF), then build.local.conf.
+load_build_config ()
+{
+  set_config_defaults
+
+  local CONFIG_FILE="${BUILD_CONF:-$SANDBOX_DIR/build.conf}"
+
+  if [ -f "$CONFIG_FILE" ]; then
+    echo "Reading the build configuration from \"$CONFIG_FILE\" ..."
+    source "$CONFIG_FILE"
+  else
+    echo "No build configuration at \"$CONFIG_FILE\", using the built-in defaults."
+  fi
+
+  # Machine-local overrides, not tracked in Git.
+  local LOCAL_CONFIG_FILE="$SANDBOX_DIR/build.local.conf"
+
+  if [ -f "$LOCAL_CONFIG_FILE" ]; then
+    echo "Reading the local build configuration from \"$LOCAL_CONFIG_FILE\" ..."
+    source "$LOCAL_CONFIG_FILE"
+  fi
+}
+
+# Determines the firmware version string, see SBRANCH_MODE in build.conf.
+determine_sbranch ()
+{
+  local SITES_FILE="$1"
+
+  case "$SBRANCH_MODE" in
+
+    fixed)
+      if [ -z "$SBRANCH_FIXED" ]; then
+        abort "SBRANCH_MODE is \"fixed\", but SBRANCH_FIXED is empty."
+      fi
+      SBRANCH="$SBRANCH_FIXED"
+      ;;
+
+    date)
+      # The date followed by the first 3 characters of the release branch
+      # of the first site in the sites file, which yields e.g. "26030610sta".
+      local RELBRANCH_PREFIX
+      RELBRANCH_PREFIX="$(grep -v -e '^#' -e '^[[:space:]]*$' -- "$SITES_FILE" | head -1 | cut -c1-3)"
+      SBRANCH="$(date +%y%m%d%H)$RELBRANCH_PREFIX"
+      ;;
+
+    datetime)
+      SBRANCH="$(date +%Y%m%d%H%M)"
+      ;;
+
+    *)
+      abort "Invalid SBRANCH_MODE \"$SBRANCH_MODE\". Valid values are: fixed, date, datetime."
+      ;;
+
+  esac
+
+  echo "Firmware version (SBRANCH): $SBRANCH"
+}
+
+# Copies GLUON_TARGETS into ENABLED_TARGETS, dropping the entries that are
+# disabled with a leading "-".
+get_enabled_targets ()
+{
+  ENABLED_TARGETS=()
+
+  local TARGET
+
+  for TARGET in "${GLUON_TARGETS[@]}"; do
+    if [[ $TARGET == -* ]]; then
+      continue
+    fi
+    ENABLED_TARGETS+=( "$TARGET" )
+  done
+
+  if (( ${#ENABLED_TARGETS[@]} == 0 )); then
+    abort "No targets enabled. Check GLUON_TARGETS in the build configuration."
+  fi
+}
 generate_site_config ()
 {
   local RELBRANCH="${1}"
@@ -243,22 +342,24 @@ build_images_for_site ()
   append_quoted_arg  ARGS  GLUON_IMAGEDIR   "$SANDBOX_DIR/images/running/$TEMPLATE_NAME/$SITE_CODE"
   append_quoted_arg  ARGS  GLUON_MODULEDIR  "$SANDBOX_DIR/gluon/output/modules"
   append_quoted_arg  ARGS  GLUON_PACKAGEDIR "$SANDBOX_DIR/gluon/output/packages"
-  append_quoted_arg  ARGS  GLUON_SITE_VERSION $(date +%Y%m%d)
+  append_quoted_arg  ARGS  GLUON_SITE_VERSION "$GLUON_SITE_VERSION"
   # For the Gluon build system, BROKEN=1 means "use the experimental/unstable branch".
-  append_quoted_arg  ARGS  BROKEN "1"
+  append_quoted_arg  ARGS  BROKEN "$BROKEN"
 
-  # verbose logs
-  # append_quoted_arg  ARGS  v "s"
-  # append_quoted_arg  ARGS BUILD_LOG "1"
+  if [ "$BUILD_LOG" = true ]; then
+    append_quoted_arg  ARGS  BUILD_LOG "1"
+  fi
 
   # Setting GLUON_BRANCH enables the firmware autoupdater.
-  append_quoted_arg  ARGS GLUON AUTOUPDATER_ENABLED=1
+  if [ "$AUTOUPDATER_ENABLED" = true ]; then
+    append_quoted_arg  ARGS GLUON AUTOUPDATER_ENABLED=1
+  fi
   append_quoted_arg  ARGS GLUON_AUTOUPDATER_BRANCH "$RELBRANCH"
   append_quoted_arg  ARGS GLUON_BRANCH "$RELBRANCH"
 
   # Parameters for setting buildbot signatures
   local SIGN_ARGS=""
-  SIGN_ARGS+=" $(cat $SANDBOX_DIR/buildkeys/untrustworthy-buildbot-signkey.priv)"
+  SIGN_ARGS+=" $(cat "$SANDBOX_DIR/buildkeys/$SIGNKEY_FILE")"
   SIGN_ARGS+=" $SANDBOX_DIR/images/running/$TEMPLATE_NAME/$SITE_CODE/sysupgrade/$RELBRANCH.manifest"
 
   local MAKE_CMD
@@ -314,13 +415,10 @@ build_images_for_site ()
       fi
       SITECODE_BEFORE=$SITE_CODE
     done
-    # GLUON_DEVICES="avm-fritz-box-4020 tp-link-tl-wdr4300-v1"
+    # GLUONDEVICES comes from the build configuration.
     ## remains from gluon2021.x patches
     # if [ "$TARGETS" == "ramips-mt7621" ] && [ "$ADD_MI4G" == true ] ; then
     #   GLUONDEVICES+="xiaomi-mi-router-4a-gigabit-edition"
-    # else
-    #   # unset GLUONDEVICES
-    GLUONDEVICES=""
     # fi
     echo "Site prepare.sh  $TARGET $GLUONDEVICES"
 
@@ -333,10 +431,14 @@ build_images_for_site ()
     eval "$MAKE_CMD"
   fi
 
-  local MAKE_J_VAL
-  MAKE_J_VAL="$(( $(getconf _NPROCESSORS_ONLN) * 2 ))"
-  # only 1 cpu core to use
-  # MAKE_J_VAL=1
+  # MAKE_J_VAL is 0 in the configuration when the job count should be derived
+  # from the number of CPU cores.
+  local JOB_COUNT="$MAKE_J_VAL"
+
+  if (( JOB_COUNT == 0 )); then
+    JOB_COUNT="$(( $(getconf _NPROCESSORS_ONLN) * MAKE_J_FACTOR ))"
+  fi
+
   for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
     TARGET="${TARGETS[target_index]}"
 
@@ -344,9 +446,11 @@ build_images_for_site ()
     echo "Building the firmware for site code: $SITE_CODE, target: $TARGET ..."
     printf -v MAKE_CMD "make GLUON_TARGET=%q"  "$TARGET"
     # For the Gluon build system, V=s means generate a full build log (show build commands, compiler warnings etc.).
-    MAKE_CMD+=" V=s"
+    if [ "$VERBOSE_BUILD" = true ]; then
+      MAKE_CMD+=" V=s"
+    fi
     MAKE_CMD+=" $ARGS"
-    MAKE_CMD+=" -j $MAKE_J_VAL  --output-sync=recurse"
+    MAKE_CMD+=" -j $JOB_COUNT  --output-sync=recurse"
     if [ ! -z "$GLUONDEVICES" ] && [ "${#GLUONDEVICES}" -gt 1 ]; then
       MAKE_CMD+=" GLUON_DEVICES=$GLUONDEVICES "
       echo "for GLUONDEVICEs $GLUONDEVICES"
@@ -372,46 +476,37 @@ build_images_for_site ()
   # This directory may already exist from a previous run.
   mkdir --parents -- "$SITE_IMAGE_DIR"
 
-  rsync --archive "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/" --exclude '*.old' --exclude '*.backup'  --exclude '*~'  --exclude '*.nonworking'   "$SITE_IMAGE_DIR"
+  local -a RSYNC_EXCLUDE_ARGS=()
+  local PATTERN
+
+  for PATTERN in "${SITE_COPY_EXCLUDES[@]}"; do
+    RSYNC_EXCLUDE_ARGS+=( --exclude "$PATTERN" )
+  done
+
+  rsync --archive "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/" "${RSYNC_EXCLUDE_ARGS[@]}" "$SITE_IMAGE_DIR"
+
+  # Keep the build script and its configuration next to the images, so that it
+  # stays visible with which settings they were built.
   cp -- "$SANDBOX_DIR/build.sh" "$SITE_IMAGE_DIR/"
+
+  if [ -f "$SANDBOX_DIR/build.conf" ]; then
+    cp -- "$SANDBOX_DIR/build.conf" "$SITE_IMAGE_DIR/"
+  fi
 }
 
 build_all_images ()
 {
+  # Targets given on the command line win, otherwise the enabled entries of
+  # GLUON_TARGETS from the build configuration are used.
   local -a TARGETS=("$@")
-  if (( ${#TARGETS[@]} == 0 )); then
-    TARGETS+=( armsr-armv7 )
-    TARGETS+=( armsr-armv8 )
-    TARGETS+=( ath79-generic )
-    TARGETS+=( ath79-nand )
-    TARGETS+=( ath79-mikrotik )
-    ####### TARGETS+=( bcm27xx-bcm2708 )
-    TARGETS+=( bcm27xx-bcm2709 )
-    TARGETS+=( ipq40xx-generic )
-    TARGETS+=( ipq40xx-mikrotik )
-    TARGETS+=( ipq806x-generic )
-    TARGETS+=( lantiq-xrx200 )
-    TARGETS+=( lantiq-xway )
-    TARGETS+=( mediatek-filogic )
-    TARGETS+=( mediatek-mt7622 )
-    TARGETS+=( mpc85xx-p1010 )
-    TARGETS+=( mpc85xx-p1020 )
-    TARGETS+=( ramips-mt7620 )
-    TARGETS+=( ramips-mt7621 )
-    TARGETS+=( ramips-mt76x8 )
-    TARGETS+=( realtek-rtl838x )
-    TARGETS+=( rockchip-armv8 )
-    TARGETS+=( sunxi-cortexa7 )
-    TARGETS+=( x86-generic )
-    #### TARGETS+=( x86-geode )
-    #### TARGETS+=( x86-legacy )
-    TARGETS+=( x86-64 )
-    TARGETS+=( bcm27xx-bcm2710 )
-    TARGETS+=( bcm27xx-bcm2711 )
-    TARGETS+=( mvebu-cortexa9 )
-    TARGETS+=( ipq40xx-chromium )
-    TARGETS+=( ipq807x-generic )
 
+  if (( ${#TARGETS[@]} == 0 )); then
+    local -a ENABLED_TARGETS
+    get_enabled_targets
+    TARGETS=( "${ENABLED_TARGETS[@]}" )
+    echo "Building the ${#TARGETS[@]} targets enabled in the build configuration."
+  else
+    echo "Building the ${#TARGETS[@]} targets given on the command line."
   fi
 
   pushd "$GLUON_DIR" >/dev/null
@@ -592,6 +687,13 @@ parse_sites_file ()
 
 if (( $# == 0 )); then
   echo "Usage: build.sh <sites file> [target1] [target2] [...]"
+  echo
+  echo "The build settings are read from build.conf next to this script, or"
+  echo "from the file named by the BUILD_CONF environment variable. Settings"
+  echo "in build.local.conf, if present, override them."
+  echo
+  echo "Targets given on the command line override GLUON_TARGETS from the"
+  echo "configuration and are meant for individual test builds."
   exit 0
 fi
 
@@ -599,16 +701,21 @@ if ! [ -f "$1" ]; then
   abort "File \"$1\" does not exist."
 fi
 
-parse_sites_file "$1"
+SITES_FILE="$1"
+shift
 
 SANDBOX_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+load_build_config
+
+determine_sbranch "$SITES_FILE"
+
+parse_sites_file "$SITES_FILE"
 
 generate_all_site_configs
 
 GLUON_DIR="$SANDBOX_DIR/gluon"
 
-DATE_SUFFIX="$(date +%s)"
-
-shift
+DATE_SUFFIX="$(date "$DATE_SUFFIX_FORMAT")"
 
 build_all_images "$@"
