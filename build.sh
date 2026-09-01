@@ -517,18 +517,70 @@ log_build_time ()
   local SITE_CODE="$3"
   local TARGET="$4"
   local ELAPSED_SECONDS="$5"
+  local NOTE="${6:-}"
 
-  # The template name has to be recorded as well: the key and nokeys variants
+  # The run id and the build order have to be recorded because the file is
+  # appended to across runs; without them the rows of two runs could not be
+  # told apart. The template name is needed because the key and nokeys variants
   # of a domain share the same site code and differ only in the template.
-  printf '%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+         "$BUILD_RUN_ID" \
          "$(date --iso-8601=seconds)" \
          "$(date +%s)" \
+         "$BUILD_ORDER" \
          "$PHASE" \
          "$TEMPLATE_NAME" \
          "$SITE_CODE" \
          "$TARGET" \
          "$ELAPSED_SECONDS" \
+         "$NOTE" \
          >>"$BUILD_TIMES_FILE"
+}
+
+# Writes the closing run_end record, including the exit status. Installed as an
+# EXIT trap by open_build_times_file, so that a run that is aborted or that
+# fails still leaves a terminal record behind: a run whose rows are not closed
+# by a run_end is incomplete and must not be read as a finished measurement.
+finish_build_times_file ()
+{
+  local -i EXIT_STATUS="$?"
+
+  # Do not fire from a subshell, for example the left hand side of a pipe.
+  if [ "$BASHPID" != "$$" ]; then
+    return
+  fi
+
+  local UPTIME
+  read_uptime_as_integer
+
+  log_build_time run_end "-" "-" "-" "$(( UPTIME - RUN_UPTIME_BEGIN ))" "exit=$EXIT_STATUS"
+}
+
+# Prepares the timing CSV. The file is appended to across runs, so that several
+# runs can be compared without moving it out of the way first; the header is
+# only written when the file is still empty or does not exist.
+open_build_times_file ()
+{
+  local -i DOMAIN_COUNT="$1"
+  local -i TARGET_COUNT="$2"
+
+  BUILD_RUN_ID="$(date +%s)-$$"
+
+  if [ ! -s "$BUILD_TIMES_FILE" ]; then
+    echo "run_id,timestamp,epoch,build_order,phase,template,site_code,target,seconds,note" >"$BUILD_TIMES_FILE"
+  fi
+
+  local UPTIME
+  read_uptime_as_integer
+  RUN_UPTIME_BEGIN="$UPTIME"
+
+  # The expected step count makes it possible to tell later how far a run got.
+  log_build_time run_start "-" "-" "-" 0 \
+                 "domains=$DOMAIN_COUNT targets=$TARGET_COUNT steps=$(( DOMAIN_COUNT * TARGET_COUNT )) sbranch=$SBRANCH"
+
+  trap finish_build_times_file EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 }
 
 # Builds one domain x one target and records how long it took.
@@ -578,22 +630,23 @@ build_all_images ()
     echo "Building the ${#TARGETS[@]} targets given on the command line."
   fi
 
+  # Opened before the fetch, so that a run that already fails there is recorded.
+  # RUN_UPTIME_BEGIN is deliberately global: the EXIT trap still needs it after
+  # this function has returned.
+  open_build_times_file "${#ALL_SITE_RELBRANCHES[@]}" "${#TARGETS[@]}"
+  echo "The build timings are appended to: $BUILD_TIMES_FILE (run id $BUILD_RUN_ID)"
+
   pushd "$GLUON_DIR" >/dev/null
   echo "Git fetching..."
   git fetch --all
-
-  echo "The build timings are recorded in: $BUILD_TIMES_FILE"
-  echo "timestamp,epoch,phase,template,site_code,target,seconds" >"$BUILD_TIMES_FILE"
-
-  local UPTIME
-  read_uptime_as_integer
-  local RUN_UPTIME_BEGIN="$UPTIME"
 
   # Prepare the Gluon tree once, before the first domain. All domains are then
   # built against this state, without resetting or patching again.
   local PREPARE_LOG_FILENAME="$SANDBOX_DIR/assembled/prepare.log"
   echo "Preparing the Gluon tree. The log file is: $PREPARE_LOG_FILENAME"
 
+  local UPTIME
+  read_uptime_as_integer
   local PREPARE_UPTIME_BEGIN="$UPTIME"
 
   {
@@ -659,8 +712,8 @@ build_all_images ()
   done
 
   read_uptime_as_integer
-  log_build_time total "-" "-" "-" "$(( UPTIME - RUN_UPTIME_BEGIN ))"
-
+  # The total is not recorded here: the EXIT trap writes the closing run_end
+  # record, so that an aborted run gets one too.
   local ELAPSED_TIME_STR
   get_human_friendly_elapsed_time "$(( UPTIME - RUN_UPTIME_BEGIN ))"
   echo "Total build time with BUILD_ORDER=$BUILD_ORDER: $ELAPSED_TIME_STR."
