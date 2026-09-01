@@ -394,6 +394,17 @@ prepare_gluon_tree ()
     fi
   fi
 
+  # "make update" obtains and patches the external repositories (OpenWrt and
+  # the feeds). It has to come first: every other rule goes through "config",
+  # which needs openwrt/staging_dir/hostpkg/bin/lua and otherwise aborts with
+  # "You don't seem to have obtained the external repositories needed by Gluon;
+  # please call `make update` first!". That includes "make clean".
+  # The rule is target- and site-independent, so once per run is enough.
+  echo "Gluon make update..."
+  printf -v MAKE_CMD "make update %s"  "$ARGS"
+  echo "$MAKE_CMD"
+  eval "$MAKE_CMD"
+
   # Gluon's "make clean" is per target, so it has to be run for each of them.
   if [ "$MAKECLEAN" = true ]; then
     for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
@@ -405,15 +416,13 @@ prepare_gluon_tree ()
     done
   fi
 
-  # prepare.sh applies the patches from patches/ to the Gluon tree. It takes no
-  # arguments; the target and device list it used to be passed were never read.
+  # prepare.sh applies the patches from patches/ and has to run last: some of
+  # them patch openwrt/ (see add-cudy-3000.sh), and "make update" overwrites
+  # local changes in the external repositories.
+  # It takes no arguments; the target and device list it used to be passed were
+  # never read.
   echo "Applying the patches from patches/ ..."
   "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh"
-
-  echo "Gluon make update..."
-  printf -v MAKE_CMD "make update %s"  "$ARGS"
-  echo "$MAKE_CMD"
-  eval "$MAKE_CMD"
 }
 
 # Builds one target of one domain. This is the unit of work that the two loop
