@@ -101,6 +101,9 @@ set_config_defaults ()
   GLUONDEVICES=""
   SIGNKEY_FILE="untrustworthy-buildbot-signkey.priv"
 
+  BUILD_ORDER="domain"
+  BUILD_TIMES_FILE="$SANDBOX_DIR/build-times.csv"
+
   DATE_SUFFIX_FORMAT="+%s"
   SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
 
@@ -413,13 +416,52 @@ prepare_gluon_tree ()
   eval "$MAKE_CMD"
 }
 
-build_images_for_site ()
+# Builds one target of one domain. This is the unit of work that the two loop
+# orders (see BUILD_ORDER) arrange differently.
+build_site_target ()
 {
   local RELBRANCH="$1"
   local TEMPLATE_NAME="$2"
   local SITE_CODE="$3"
-  local -i target_index
-  local TARGET
+  local TARGET="$4"
+
+  local ARGS
+  build_make_args "$RELBRANCH" "$TEMPLATE_NAME" "$SITE_CODE"
+
+  # MAKE_J_VAL is 0 in the configuration when the job count should be derived
+  # from the number of CPU cores.
+  local JOB_COUNT="$MAKE_J_VAL"
+
+  if (( JOB_COUNT == 0 )); then
+    JOB_COUNT="$(( $(getconf _NPROCESSORS_ONLN) * MAKE_J_FACTOR ))"
+  fi
+
+  local MAKE_CMD
+
+  echo "GLUONDEVICEs $GLUONDEVICES"
+  echo "Building the firmware for site code: $SITE_CODE, target: $TARGET ..."
+  printf -v MAKE_CMD "make GLUON_TARGET=%q"  "$TARGET"
+  # For the Gluon build system, V=s means generate a full build log (show build commands, compiler warnings etc.).
+  if [ "$VERBOSE_BUILD" = true ]; then
+    MAKE_CMD+=" V=s"
+  fi
+  MAKE_CMD+=" $ARGS"
+  MAKE_CMD+=" -j $JOB_COUNT  --output-sync=recurse"
+  if [ ! -z "$GLUONDEVICES" ] && [ "${#GLUONDEVICES}" -gt 1 ]; then
+    MAKE_CMD+=" GLUON_DEVICES=$GLUONDEVICES "
+    echo "for GLUONDEVICEs $GLUONDEVICES"
+  fi
+  echo "$MAKE_CMD"
+  eval "$MAKE_CMD"
+}
+
+# Runs once per domain, after all of its targets have been built: manifest,
+# signature and the copy of the site configuration next to the images.
+finalize_site ()
+{
+  local RELBRANCH="$1"
+  local TEMPLATE_NAME="$2"
+  local SITE_CODE="$3"
 
   local ARGS
   build_make_args "$RELBRANCH" "$TEMPLATE_NAME" "$SITE_CODE"
@@ -431,34 +473,6 @@ build_images_for_site ()
 
   local MAKE_CMD
   local SIGN_CMD
-
-  # MAKE_J_VAL is 0 in the configuration when the job count should be derived
-  # from the number of CPU cores.
-  local JOB_COUNT="$MAKE_J_VAL"
-
-  if (( JOB_COUNT == 0 )); then
-    JOB_COUNT="$(( $(getconf _NPROCESSORS_ONLN) * MAKE_J_FACTOR ))"
-  fi
-
-  for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
-    TARGET="${TARGETS[target_index]}"
-
-    echo "GLUONDEVICEs $GLUONDEVICES"
-    echo "Building the firmware for site code: $SITE_CODE, target: $TARGET ..."
-    printf -v MAKE_CMD "make GLUON_TARGET=%q"  "$TARGET"
-    # For the Gluon build system, V=s means generate a full build log (show build commands, compiler warnings etc.).
-    if [ "$VERBOSE_BUILD" = true ]; then
-      MAKE_CMD+=" V=s"
-    fi
-    MAKE_CMD+=" $ARGS"
-    MAKE_CMD+=" -j $JOB_COUNT  --output-sync=recurse"
-    if [ ! -z "$GLUONDEVICES" ] && [ "${#GLUONDEVICES}" -gt 1 ]; then
-      MAKE_CMD+=" GLUON_DEVICES=$GLUONDEVICES "
-      echo "for GLUONDEVICEs $GLUONDEVICES"
-    fi
-    echo "$MAKE_CMD"
-    eval "$MAKE_CMD"
-  done
 
   echo "Making manifest..."
 
@@ -494,6 +508,61 @@ build_images_for_site ()
   fi
 }
 
+# Appends one record to the timing CSV. The file is meant for comparing build
+# runs against each other, for example the two BUILD_ORDER variants.
+log_build_time ()
+{
+  local PHASE="$1"
+  local TEMPLATE_NAME="$2"
+  local SITE_CODE="$3"
+  local TARGET="$4"
+  local ELAPSED_SECONDS="$5"
+
+  # The template name has to be recorded as well: the key and nokeys variants
+  # of a domain share the same site code and differ only in the template.
+  printf '%s,%s,%s,%s,%s,%s,%s\n' \
+         "$(date --iso-8601=seconds)" \
+         "$(date +%s)" \
+         "$PHASE" \
+         "$TEMPLATE_NAME" \
+         "$SITE_CODE" \
+         "$TARGET" \
+         "$ELAPSED_SECONDS" \
+         >>"$BUILD_TIMES_FILE"
+}
+
+# Builds one domain x one target and records how long it took.
+run_build_step ()
+{
+  local -i site_index="$1"
+  local -i target_index="$2"
+
+  local SITE_CODE="${ALL_SITE_CODES[$site_index]}"
+  local TARGET="${TARGETS[target_index]}"
+
+  get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "$SITE_CODE"
+
+  local UPTIME
+  read_uptime_as_integer
+  local STEP_UPTIME_BEGIN="$UPTIME"
+
+  {
+    build_site_target "${ALL_SITE_RELBRANCHES[$site_index]}" \
+                      "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" \
+                      "$SITE_CODE" \
+                      "$TARGET"
+  } 2>&1 | tee --append -- "$LOG_FILENAME"
+
+  read_uptime_as_integer
+  local -i ELAPSED="$(( UPTIME - STEP_UPTIME_BEGIN ))"
+
+  local ELAPSED_TIME_STR
+  get_human_friendly_elapsed_time "$ELAPSED"
+  echo "Finished site code $SITE_CODE, target $TARGET. Elapsed time: $ELAPSED_TIME_STR."
+
+  log_build_time build "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "$SITE_CODE" "$TARGET" "$ELAPSED"
+}
+
 build_all_images ()
 {
   # Targets given on the command line win, otherwise the enabled entries of
@@ -513,10 +582,19 @@ build_all_images ()
   echo "Git fetching..."
   git fetch --all
 
+  echo "The build timings are recorded in: $BUILD_TIMES_FILE"
+  echo "timestamp,epoch,phase,template,site_code,target,seconds" >"$BUILD_TIMES_FILE"
+
+  local UPTIME
+  read_uptime_as_integer
+  local RUN_UPTIME_BEGIN="$UPTIME"
+
   # Prepare the Gluon tree once, before the first domain. All domains are then
   # built against this state, without resetting or patching again.
   local PREPARE_LOG_FILENAME="$SANDBOX_DIR/assembled/prepare.log"
   echo "Preparing the Gluon tree. The log file is: $PREPARE_LOG_FILENAME"
+
+  local PREPARE_UPTIME_BEGIN="$UPTIME"
 
   {
     prepare_gluon_tree "${ALL_SITE_RELBRANCHES[0]}" \
@@ -525,38 +603,67 @@ build_all_images ()
                        "${ALL_SITE_CODES[0]}"
   } 2>&1 | tee -- "$PREPARE_LOG_FILENAME"
 
-  local -i index
-  for (( index=0; index < ${#ALL_SITE_RELBRANCHES[@]}; index += 1 )); do
+  read_uptime_as_integer
+  log_build_time prepare "-" "-" "-" "$(( UPTIME - PREPARE_UPTIME_BEGIN ))"
 
-    get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$index]}"  "${ALL_SITE_CODES[$index]}"
-    echo "Building the firmware for site code ${ALL_SITE_CODES[$index]} ..."
-    echo "The site build log file is: $LOG_FILENAME"
+  local -i site_index
+  local -i target_index
+
+  # The unit of work is one domain x one target. BUILD_ORDER only decides in
+  # which order those units are visited, so that both orders can be compared
+  # against each other with the timings in BUILD_TIMES_FILE.
+  case "$BUILD_ORDER" in
+
+    domain)
+      echo "Build order: all targets of a domain, then the next domain."
+      for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
+        for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
+          run_build_step "$site_index" "$target_index"
+        done
+      done
+      ;;
+
+    target)
+      echo "Build order: all domains of a target, then the next target."
+      for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
+        for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
+          run_build_step "$site_index" "$target_index"
+        done
+      done
+      ;;
+
+    *)
+      abort "Invalid BUILD_ORDER \"$BUILD_ORDER\". Valid values are: domain, target."
+      ;;
+
+  esac
+
+  # Manifest, signature and site copy need all targets of a domain to be built,
+  # which under BUILD_ORDER=target is only the case once everything is done.
+  for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
+
+    get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
+
     local UPTIME
     read_uptime_as_integer
-    local SITE_UPTIME_BEGIN="$UPTIME"
+    local STEP_UPTIME_BEGIN="$UPTIME"
 
     {
-      build_images_for_site "${ALL_SITE_RELBRANCHES[$index]}" \
-                             "${ALL_SITE_TEMPLATE_NAMES[$index]}" \
-                             "${ALL_SITE_CODES[$index]}"
+      finalize_site "${ALL_SITE_RELBRANCHES[$site_index]}" \
+                    "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" \
+                    "${ALL_SITE_CODES[$site_index]}"
     } 2>&1 | tee --append -- "$LOG_FILENAME"
 
-    # The whole build takes a long time. By recording the build time for each site,
-    # it is easier to measure any impact on the the build performance after
-    # making changes to the build system.
     read_uptime_as_integer
-    local ELAPSED_TIME_STR
-    get_human_friendly_elapsed_time "$(( UPTIME - SITE_UPTIME_BEGIN ))"
-    echo "Finished building the firmware for site code ${ALL_SITE_CODES[$index]}. Elapsed time: $ELAPSED_TIME_STR."
-
-    # We could compress the log file here, but it is not worth it.
-    # It saves little space compared to the rest of the generated files,
-    # and it makes it more inconvenient to open the log file.
-    if false; then
-      gzip --best -- "$LOG_FILENAME"
-    fi
-
+    log_build_time finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}" "-" "$(( UPTIME - STEP_UPTIME_BEGIN ))"
   done
+
+  read_uptime_as_integer
+  log_build_time total "-" "-" "-" "$(( UPTIME - RUN_UPTIME_BEGIN ))"
+
+  local ELAPSED_TIME_STR
+  get_human_friendly_elapsed_time "$(( UPTIME - RUN_UPTIME_BEGIN ))"
+  echo "Total build time with BUILD_ORDER=$BUILD_ORDER: $ELAPSED_TIME_STR."
 
   popd >/dev/null
 
