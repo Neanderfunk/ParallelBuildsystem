@@ -267,7 +267,7 @@ build_images_for_site ()
   local PREPARED_FILENAME="$SANDBOX_DIR/.prepared"
   local PREPARED_CONTENTS
 
-  if [ -f "PREPARED_FILENAME" ]; then
+  if [ -f "$PREPARED_FILENAME" ]; then
     PREPARED_CONTENTS=$(<"$PREPARED_FILENAME")
     rm -- "$PREPARED_FILENAME"
   else
@@ -514,7 +514,7 @@ declare -a ALL_SITE_DOMAIN_HASHS=()
 declare -a ALL_SITE_META_NAMES=()
 declare -a ALL_SITE_META_WEBSITES=()
 declare -a ALL_SITE_MAP_WEBSITES=()
-declare -a ALL_SITE_FWWEBSITE_HOSTSS=()
+declare -a ALL_SITE_FWWEBSITE_HOSTS=()
 declare -a ALL_SITE_FWWEBSITE_TLDS=()
 declare -a ALL_SITE_OPKG_FQDNS=()
 declare -a ALL_SITE_SUPERNODE_TLDS=()
