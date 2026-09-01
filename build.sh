@@ -80,10 +80,6 @@ get_site_log_filename ()
 
   LOG_FILENAME="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/build.log"
 }
-SITECODE_BEFORE="coldstart"
-FIRSTSITE=true
-FIRSTRUN=true
-
 # Default values for every setting that build.conf may override. They are
 # defined here so that build.sh still runs if no configuration file exists.
 set_config_defaults ()
@@ -327,16 +323,14 @@ append_quoted_arg ()
   printf -v "$APPEND_TO_VAR_NAME"  "%s $APPEND_ARG_NAME=%q"  "${!APPEND_TO_VAR_NAME}"  "$APPEND_PATH"
 }
 
-build_images_for_site ()
+# Assembles the make arguments for one site into the caller's ARGS variable.
+build_make_args ()
 {
   local RELBRANCH="$1"
   local TEMPLATE_NAME="$2"
   local SITE_CODE="$3"
-  local GLUONBRANCH="$4"
-  local -i target_index
-  local TARGET
 
-  local ARGS=""
+  ARGS=""
 
   append_quoted_arg  ARGS  GLUON_SITEDIR    "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
   append_quoted_arg  ARGS  GLUON_IMAGEDIR   "$SANDBOX_DIR/images/running/$TEMPLATE_NAME/$SITE_CODE"
@@ -356,6 +350,79 @@ build_images_for_site ()
   fi
   append_quoted_arg  ARGS GLUON_AUTOUPDATER_BRANCH "$RELBRANCH"
   append_quoted_arg  ARGS GLUON_BRANCH "$RELBRANCH"
+}
+
+# Brings the Gluon tree into the state that every domain is then built against:
+# optionally reset it, optionally clean it for all targets, apply the patches,
+# and run "make update".
+#
+# This runs exactly once per build.sh run, before the first domain. The tree is
+# neither domain- nor target-specific, so the following domains reuse it as is.
+# It is passed the first site only because "make" needs a valid GLUON_SITEDIR
+# and because prepare.sh is a copy inside each assembled site directory.
+prepare_gluon_tree ()
+{
+  local RELBRANCH="$1"
+  local GLUONBRANCH="$2"
+  local TEMPLATE_NAME="$3"
+  local SITE_CODE="$4"
+
+  local ARGS
+  build_make_args "$RELBRANCH" "$TEMPLATE_NAME" "$SITE_CODE"
+
+  local MAKE_CMD
+  local TARGET
+  local -i target_index
+
+  if [ "$GITRESET" = true ]; then
+    echo "Resetting the Gluon tree to origin/$GLUONBRANCH ..."
+    rm -rf .git/rebase-apply
+    # Note: this only restores tracked files. Patches that add new files leave
+    # them behind; "git clean -fd" would be needed for those, but not -x, which
+    # would also discard the openwrt tree and the build cache.
+    git reset --hard "origin/$GLUONBRANCH"
+    git submodule foreach --recursive git reset --hard
+
+    if [ -d "openwrt" ]; then
+      pushd openwrt >/dev/null
+      git reset --hard
+      git submodule foreach --recursive git reset --hard
+      popd >/dev/null
+    fi
+  fi
+
+  # Gluon's "make clean" is per target, so it has to be run for each of them.
+  if [ "$MAKECLEAN" = true ]; then
+    for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
+      TARGET="${TARGETS[target_index]}"
+      echo "Cleaning the Gluon tree for target: $TARGET ..."
+      printf -v MAKE_CMD  "make clean GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
+      echo "$MAKE_CMD"
+      eval "$MAKE_CMD"
+    done
+  fi
+
+  # prepare.sh applies the patches from patches/ to the Gluon tree. It takes no
+  # arguments; the target and device list it used to be passed were never read.
+  echo "Applying the patches from patches/ ..."
+  "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh"
+
+  echo "Gluon make update..."
+  printf -v MAKE_CMD "make update %s"  "$ARGS"
+  echo "$MAKE_CMD"
+  eval "$MAKE_CMD"
+}
+
+build_images_for_site ()
+{
+  local RELBRANCH="$1"
+  local TEMPLATE_NAME="$2"
+  local SITE_CODE="$3"
+  local -i target_index
+  local TARGET
+
+  local ARGS
+  build_make_args "$RELBRANCH" "$TEMPLATE_NAME" "$SITE_CODE"
 
   # Parameters for setting buildbot signatures
   local SIGN_ARGS=""
@@ -364,72 +431,6 @@ build_images_for_site ()
 
   local MAKE_CMD
   local SIGN_CMD
-
-  local PREPARED_FILENAME="$SANDBOX_DIR/.prepared"
-  local PREPARED_CONTENTS
-
-  if [ -f "$PREPARED_FILENAME" ]; then
-    PREPARED_CONTENTS=$(<"$PREPARED_FILENAME")
-    rm -- "$PREPARED_FILENAME"
-  else
-    PREPARED_CONTENTS=""
-  fi
-
-  if [[ "$PREPARED_CONTENTS" != "$TEMPLATE_NAME" ]]; then
-
-    for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
-      TARGET="${TARGETS[target_index]}"
-      # if [ "$SITE_CODE" != "$SITECODE_BEFORE" ] && [ "$MAKECLEAN" = true ] ; then
-      if [ "$GITRESET" = true ] && [ "$FIRSTRUN" = true ] ; then
-        echo "GitReset firmware for site code: $SITE_CODE, target: $TARGET ..."
-        rm -rf .git/rebase-apply
-        # git clean -xfd
-        # git submodule foreach --recursive git clean -xfd
-        git reset --hard origin/$GLUONBRANCH
-        git submodule foreach --recursive git reset --hard
-        # git submodule update --init --recursive
-        if [ -d "openwrt" ]; then
-          pushd openwrt
-          # git clean -xfd
-          # git submodule foreach --recursive git clean -xfd
-          git reset --hard
-          git submodule foreach --recursive git reset --hard
-          # git submodule update --init --recursive
-          popd
-        else
-          # make update GLUON_TARGET=ar71xx-tiny   GLUON_SITEDIR=/home/build/firmware2021.x/firmware/assembled/43_bggl/43_bggl GLUON_IMAGEDIR=/home/build/firmware2021.x/firmware/images/running/43_bggl/43_bggl GLUON_MODULEDIR=/home/build/firmware2021.x/firmware/gluon/output/modules GLUON_PACKAGEDIR=/home/build/firmware2021.x/firmware/gluon/output/packages GLUON_SITE_VERSION=20241009 BROKEN=1 GLUON=AUTOUPDATER_ENABLED=1 GLUON_AUTOUPDATER_BRANCH=stable GLUON_BRANCH=stable
-          echo "Make update for site code: $SITE_CODE, target: $TARGET ..."
-          printf -v MAKE_CMD  "make update GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
-          echo "$MAKE_CMD"
-          eval "$MAKE_CMD"
-        fi
-        FIRSTRUN=false
-      fi
-      SITECODE_BEFORE=$SITE_CODE
-      if [ "$MAKECLEAN" = true ] && [ "$FIRSTSITE" = true ] ; then
-        echo "Cleaning the firmware for site code: $SITE_CODE, target: $TARGET ..."
-        printf -v MAKE_CMD  "make clean GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
-        echo "$MAKE_CMD"
-        eval "$MAKE_CMD"
-        FIRSTSITE=false
-      fi
-      SITECODE_BEFORE=$SITE_CODE
-    done
-    # GLUONDEVICES comes from the build configuration.
-    ## remains from gluon2021.x patches
-    # if [ "$TARGETS" == "ramips-mt7621" ] && [ "$ADD_MI4G" == true ] ; then
-    #   GLUONDEVICES+="xiaomi-mi-router-4a-gigabit-edition"
-    # fi
-    echo "Site prepare.sh  $TARGET $GLUONDEVICES"
-
-    "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" $TARGET $GLUONDEVICES
-    # "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh"
-
-    echo "Gluon make update..."
-    printf -v MAKE_CMD "make update %s"  "$ARGS"
-    echo "$MAKE_CMD"
-    eval "$MAKE_CMD"
-  fi
 
   # MAKE_J_VAL is 0 in the configuration when the job count should be derived
   # from the number of CPU cores.
@@ -459,7 +460,6 @@ build_images_for_site ()
     eval "$MAKE_CMD"
   done
 
-  echo "$TEMPLATE_NAME" > "$PREPARED_FILENAME"
   echo "Making manifest..."
 
   printf -v MAKE_CMD "make manifest %s"  "$ARGS"
@@ -513,6 +513,18 @@ build_all_images ()
   echo "Git fetching..."
   git fetch --all
 
+  # Prepare the Gluon tree once, before the first domain. All domains are then
+  # built against this state, without resetting or patching again.
+  local PREPARE_LOG_FILENAME="$SANDBOX_DIR/assembled/prepare.log"
+  echo "Preparing the Gluon tree. The log file is: $PREPARE_LOG_FILENAME"
+
+  {
+    prepare_gluon_tree "${ALL_SITE_RELBRANCHES[0]}" \
+                       "${ALL_SITE_GLUON_BRANCHES[0]}" \
+                       "${ALL_SITE_TEMPLATE_NAMES[0]}" \
+                       "${ALL_SITE_CODES[0]}"
+  } 2>&1 | tee -- "$PREPARE_LOG_FILENAME"
+
   local -i index
   for (( index=0; index < ${#ALL_SITE_RELBRANCHES[@]}; index += 1 )); do
 
@@ -526,8 +538,7 @@ build_all_images ()
     {
       build_images_for_site "${ALL_SITE_RELBRANCHES[$index]}" \
                              "${ALL_SITE_TEMPLATE_NAMES[$index]}" \
-                             "${ALL_SITE_CODES[$index]}" \
-                             "${ALL_SITE_GLUON_BRANCHES[$index]}"
+                             "${ALL_SITE_CODES[$index]}"
     } 2>&1 | tee --append -- "$LOG_FILENAME"
 
     # The whole build takes a long time. By recording the build time for each site,
