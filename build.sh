@@ -347,12 +347,17 @@ build_make_args ()
     append_quoted_arg  ARGS  BUILD_LOG "1"
   fi
 
-  # Setting GLUON_BRANCH enables the firmware autoupdater.
+  # Autoupdater, see the Gluon 2023.2.x documentation (user/getting_started):
+  # GLUON_AUTOUPDATER_ENABLED is the build time default for newly installed
+  # nodes, GLUON_AUTOUPDATER_BRANCH overrides the branch from site.conf and
+  # also selects the branch that "make manifest" generates a manifest for.
+  # The old GLUON_BRANCH is deprecated and deliberately not set any more.
   if [ "$AUTOUPDATER_ENABLED" = true ]; then
-    append_quoted_arg  ARGS GLUON AUTOUPDATER_ENABLED=1
+    append_quoted_arg  ARGS GLUON_AUTOUPDATER_ENABLED "1"
+  else
+    append_quoted_arg  ARGS GLUON_AUTOUPDATER_ENABLED "0"
   fi
   append_quoted_arg  ARGS GLUON_AUTOUPDATER_BRANCH "$RELBRANCH"
-  append_quoted_arg  ARGS GLUON_BRANCH "$RELBRANCH"
 }
 
 # Brings the Gluon tree into the state that every domain is then built against:
