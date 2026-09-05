@@ -502,31 +502,55 @@ prepare_gluon_tree ()
     echo "Resetting the Gluon tree to origin/$GLUONBRANCH ..."
     rm -rf .git/rebase-apply
     # Note: this only restores tracked files. The Gluon tree is deliberately
-    # not cleaned: some patches deposit a file in patches/openwrt/ (see
-    # targets-lantiq-xrx200-devices.patch), and "make update" applies those to
-    # the OpenWrt tree. As prepare.sh runs after "make update", such a patch
-    # only takes effect from the following run onwards - and it only survives
-    # because the file is untracked and outlives the reset.
+    # not cleaned as well: "make clean" runs before the post-update patches,
+    # so the target files that only a patch creates (targets/ipq807x-generic,
+    # targets/ipq40xx-chromium) have to survive from the previous run. Moving
+    # every Gluon-tree patch into the pre-update phase would fix that; until
+    # then, cleaning here would break "make clean" for those targets.
     git reset --hard "origin/$GLUONBRANCH"
-    git submodule foreach --recursive git reset --hard
 
-    if [ -d "openwrt" ]; then
-      pushd openwrt >/dev/null
-      git reset --hard
-      # The OpenWrt tree, on the other hand, has to be cleaned. Patches that
-      # add files there (the Cudy 3000 device trees, the zbit kernel patch)
-      # leave them behind, so the reset produces a half-applied state: the new
-      # files are still present while the changes to tracked files are gone.
-      # The next run then fails with "the next patch would create the file ...,
-      # which already exists".
-      # Without -x on purpose: OpenWrt's .gitignore covers dl, bin, build_dir,
-      # staging_dir, tmp, logs, feeds and package/feeds, so the download cache
-      # and the build tree are preserved.
-      git clean -fd
-      git submodule foreach --recursive git reset --hard
-      popd >/dev/null
-    fi
+    # Four git repositories are cascaded here: this build environment, the
+    # Gluon tree, the OpenWrt tree inside it and the package feeds beside it.
+    # A reset in one of them does not reach the others.
+    #
+    # The modules are *not* submodules: "make update" creates them with a plain
+    # "git init" (Gluon's scripts/update.sh), and Gluon's .gitignore hides them
+    # from the tree above. Neither Gluon nor OpenWrt 23.05 has a .gitmodules
+    # file, so the "git submodule foreach --recursive" that used to stand here
+    # iterated over nothing - in both trees. The module list has to come from
+    # Gluon itself instead.
+    #
+    # The reset alone is not enough either: patches that add files (the Cudy
+    # 3000 device trees, the zbit kernel patch) leave them behind, which makes
+    # the tree half-patched - new files still there, changes to tracked files
+    # gone. The next run then fails with "the next patch would create the file
+    # ..., which already exists".
+    #
+    # "git clean -fd" without -x on purpose: OpenWrt's .gitignore covers dl,
+    # bin, build_dir, staging_dir, tmp, logs, feeds and package/feeds, so the
+    # download cache and the build tree are preserved.
+    local MODULE
+    local MODULE_LIST
+    MODULE_LIST="$(GLUON_SITEDIR="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE" \
+                   bash -c '. scripts/modules.sh && echo "$GLUON_MODULES"')"
+
+    for MODULE in $MODULE_LIST; do
+      if [ ! -d "$MODULE/.git" ]; then
+        echo "Module $MODULE does not exist yet, \"make update\" will create it."
+        continue
+      fi
+      echo "Resetting the module $MODULE ..."
+      git -C "$MODULE" reset --hard
+      git -C "$MODULE" clean -fd
+    done
   fi
+
+  # The pre-update patches deposit files under patches/openwrt and
+  # patches/packages in the Gluon tree; "make update" applies those to the
+  # modules right afterwards (Gluon's scripts/patch.sh). Deposited later, they
+  # would only take effect on the following run.
+  echo "Applying the pre-update patches from patches/ ..."
+  "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" pre-update
 
   # "make update" obtains and patches the external repositories (OpenWrt and
   # the feeds). It has to come first: every other rule goes through "config",
@@ -550,13 +574,11 @@ prepare_gluon_tree ()
     done
   fi
 
-  # prepare.sh applies the patches from patches/ and has to run last: some of
-  # them patch openwrt/ (see add-cudy-3000.sh), and "make update" overwrites
-  # local changes in the external repositories.
-  # It takes no arguments; the target and device list it used to be passed were
-  # never read.
-  echo "Applying the patches from patches/ ..."
-  "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh"
+  # The post-update patches have to run last: some of them patch openwrt/ (see
+  # add-cudy-3000.sh), and "make update" overwrites local changes in the
+  # external repositories.
+  echo "Applying the post-update patches from patches/ ..."
+  "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" post-update
 }
 
 # Builds one target of one domain. This is the unit of work that the two loop
