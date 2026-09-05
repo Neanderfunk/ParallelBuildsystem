@@ -501,15 +501,28 @@ prepare_gluon_tree ()
   if [ "$GITRESET" = true ]; then
     echo "Resetting the Gluon tree to origin/$GLUONBRANCH ..."
     rm -rf .git/rebase-apply
-    # Note: this only restores tracked files. Patches that add new files leave
-    # them behind; "git clean -fd" would be needed for those, but not -x, which
-    # would also discard the openwrt tree and the build cache.
+    # Note: this only restores tracked files. The Gluon tree is deliberately
+    # not cleaned: some patches deposit a file in patches/openwrt/ (see
+    # targets-lantiq-xrx200-devices.patch), and "make update" applies those to
+    # the OpenWrt tree. As prepare.sh runs after "make update", such a patch
+    # only takes effect from the following run onwards - and it only survives
+    # because the file is untracked and outlives the reset.
     git reset --hard "origin/$GLUONBRANCH"
     git submodule foreach --recursive git reset --hard
 
     if [ -d "openwrt" ]; then
       pushd openwrt >/dev/null
       git reset --hard
+      # The OpenWrt tree, on the other hand, has to be cleaned. Patches that
+      # add files there (the Cudy 3000 device trees, the zbit kernel patch)
+      # leave them behind, so the reset produces a half-applied state: the new
+      # files are still present while the changes to tracked files are gone.
+      # The next run then fails with "the next patch would create the file ...,
+      # which already exists".
+      # Without -x on purpose: OpenWrt's .gitignore covers dl, bin, build_dir,
+      # staging_dir, tmp, logs, feeds and package/feeds, so the download cache
+      # and the build tree are preserved.
+      git clean -fd
       git submodule foreach --recursive git reset --hard
       popd >/dev/null
     fi
