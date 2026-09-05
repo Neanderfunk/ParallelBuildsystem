@@ -106,24 +106,44 @@ set_config_defaults ()
 
   DATE_SUFFIX_FORMAT="+%s"
   SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
-
-  GLUON_TARGETS=()
 }
 
-# Reads the configuration files. Later sources override earlier ones:
-# built-in defaults, then build.conf (or $BUILD_CONF), then build.local.conf.
+# Prints the given path as an absolute one, without requiring the file to exist
+# yet. A relative path is resolved against the current working directory, which
+# is still the one the user called build.sh from.
+to_absolute_path ()
+{
+  local FILE_PATH="$1"
+
+  if [[ $FILE_PATH == /* ]]; then
+    echo "$FILE_PATH"
+  else
+    echo "$PWD/$FILE_PATH"
+  fi
+}
+
+# Sources one configuration file, aborting if it is missing. The three
+# configurations are passed on the command line, so a wrong path is a mistake
+# worth stopping for rather than silently falling back to defaults.
+source_config_file ()
+{
+  local KIND="$1"
+  local CONFIG_FILE="$2"
+
+  if [ ! -f "$CONFIG_FILE" ]; then
+    abort "The $KIND configuration \"$CONFIG_FILE\" does not exist."
+  fi
+
+  echo "Reading the $KIND configuration from \"$CONFIG_FILE\" ..."
+  source "$CONFIG_FILE"
+}
+
+# Reads the build configuration: built-in defaults first, then the given file,
+# then the optional machine-local overrides in build.local.conf.
 load_build_config ()
 {
   set_config_defaults
-
-  local CONFIG_FILE="${BUILD_CONF:-$SANDBOX_DIR/build.conf}"
-
-  if [ -f "$CONFIG_FILE" ]; then
-    echo "Reading the build configuration from \"$CONFIG_FILE\" ..."
-    source "$CONFIG_FILE"
-  else
-    echo "No build configuration at \"$CONFIG_FILE\", using the built-in defaults."
-  fi
+  source_config_file build "$1"
 
   # Machine-local overrides, not tracked in Git.
   local LOCAL_CONFIG_FILE="$SANDBOX_DIR/build.local.conf"
@@ -131,6 +151,102 @@ load_build_config ()
   if [ -f "$LOCAL_CONFIG_FILE" ]; then
     echo "Reading the local build configuration from \"$LOCAL_CONFIG_FILE\" ..."
     source "$LOCAL_CONFIG_FILE"
+  fi
+}
+
+# Reads the target configuration, which only holds GLUON_TARGETS.
+load_targets_config ()
+{
+  GLUON_TARGETS=()
+  source_config_file target "$1"
+
+  if (( ${#GLUON_TARGETS[@]} == 0 )); then
+    abort "GLUON_TARGETS is empty in \"$1\"."
+  fi
+}
+
+# Reads the domain configuration: which sites file to use, and which of its
+# domains to build.
+load_domains_config ()
+{
+  SITES_FILE=""
+  DOMAINS_INCLUDE=( all )
+  DOMAINS_EXCLUDE=()
+
+  source_config_file domain "$1"
+
+  if [ -z "$SITES_FILE" ]; then
+    abort "SITES_FILE is not set in \"$1\"."
+  fi
+
+  # A relative SITES_FILE is resolved against the directory of build.sh, so that
+  # the domain configuration does not depend on the current working directory.
+  if [[ $SITES_FILE != /* ]]; then
+    SITES_FILE="$SANDBOX_DIR/$SITES_FILE"
+  fi
+
+  if [ ! -f "$SITES_FILE" ]; then
+    abort "The sites file \"$SITES_FILE\" named in \"$1\" does not exist."
+  fi
+
+  if (( ${#DOMAINS_INCLUDE[@]} == 0 )); then
+    abort "DOMAINS_INCLUDE is empty in \"$1\". Use ( all ) to build every domain."
+  fi
+}
+
+# Decides whether one domain of the sites file is built. Domains are addressed
+# by their template name, which is the only field that is unique per row: the
+# key and nokeys variant of a domain share the same site code.
+# DOMAINS_EXCLUDE wins over DOMAINS_INCLUDE.
+domain_is_selected ()
+{
+  local TEMPLATE_NAME="$1"
+  local ENTRY
+
+  for ENTRY in "${DOMAINS_EXCLUDE[@]}"; do
+    if [[ $ENTRY == "$TEMPLATE_NAME" ]]; then
+      return 1
+    fi
+  done
+
+  for ENTRY in "${DOMAINS_INCLUDE[@]}"; do
+    if [[ $ENTRY == all || $ENTRY == "$TEMPLATE_NAME" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Reports entries of DOMAINS_INCLUDE and DOMAINS_EXCLUDE that match no row of
+# the sites file. Without this a typo would quietly build the wrong set.
+check_domain_selection ()
+{
+  local -a UNKNOWN=()
+  local ENTRY
+  local SEEN
+
+  for ENTRY in "${DOMAINS_INCLUDE[@]}" "${DOMAINS_EXCLUDE[@]}"; do
+    if [[ $ENTRY == all ]]; then
+      continue
+    fi
+
+    SEEN=false
+
+    for TEMPLATE_NAME in "${ALL_TEMPLATE_NAMES_IN_FILE[@]}"; do
+      if [[ $TEMPLATE_NAME == "$ENTRY" ]]; then
+        SEEN=true
+        break
+      fi
+    done
+
+    if [ "$SEEN" = false ]; then
+      UNKNOWN+=( "$ENTRY" )
+    fi
+  done
+
+  if (( ${#UNKNOWN[@]} != 0 )); then
+    abort "These domains are named in the domain configuration but do not appear in \"$SITES_FILE\": ${UNKNOWN[*]}"
   fi
 }
 
@@ -513,13 +629,10 @@ finalize_site ()
 
   rsync --archive "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/" "${RSYNC_EXCLUDE_ARGS[@]}" "$SITE_IMAGE_DIR"
 
-  # Keep the build script and its configuration next to the images, so that it
-  # stays visible with which settings they were built.
+  # Keep the build script and all three configurations next to the images, so
+  # that it stays visible with which settings they were built.
   cp -- "$SANDBOX_DIR/build.sh" "$SITE_IMAGE_DIR/"
-
-  if [ -f "$SANDBOX_DIR/build.conf" ]; then
-    cp -- "$SANDBOX_DIR/build.conf" "$SITE_IMAGE_DIR/"
-  fi
+  cp -- "$BUILD_CONF_FILE" "$TARGETS_CONF_FILE" "$DOMAINS_CONF_FILE" "$SITE_IMAGE_DIR/"
 }
 
 # Appends one record to the timing CSV. The file is meant for comparing build
@@ -805,6 +918,10 @@ declare -a ALL_SITE_KEY_FILE_SIGNS=()
 declare -a ALL_SITE_KEY_FILE_SSHS=()
 declare -a ALL_SITE_DOMAIN_LONGNAMES=()
 
+# Every template name the sites file contains, regardless of the selection.
+# Used to detect typos in the domain configuration.
+declare -a ALL_TEMPLATE_NAMES_IN_FILE=()
+
 parse_sites_file ()
 {
   local FILENAME="$1"
@@ -824,6 +941,15 @@ parse_sites_file ()
 
     if (( ${#COMPONENTS[@]} != 33 )); then
       abort "Syntax error parsing this line: $LINE"
+    fi
+
+    ALL_TEMPLATE_NAMES_IN_FILE+=( "${COMPONENTS[2]}" )
+
+    # Domains that the domain configuration does not select are skipped here,
+    # so that the parallel ALL_SITE_* arrays never contain them in the first
+    # place. Skipping a domain no longer means commenting it out in this file.
+    if ! domain_is_selected "${COMPONENTS[2]}"; then
+      continue
     fi
 
     ALL_SITE_RELBRANCHES+=( "${COMPONENTS[0]}" )
@@ -862,36 +988,60 @@ parse_sites_file ()
 
   done < "$FILENAME"
 
-  if (( ${#ALL_SITE_RELBRANCHES[@]} == 0 )); then
+  if (( ${#ALL_TEMPLATE_NAMES_IN_FILE[@]} == 0 )); then
     abort "Could not read any sites from the sites file."
   fi
+
+  check_domain_selection
+
+  if (( ${#ALL_SITE_RELBRANCHES[@]} == 0 )); then
+    abort "The domain configuration selects none of the ${#ALL_TEMPLATE_NAMES_IN_FILE[@]} domains in \"$FILENAME\"."
+  fi
+
+  echo "Building ${#ALL_SITE_RELBRANCHES[@]} of ${#ALL_TEMPLATE_NAMES_IN_FILE[@]} domains from \"$FILENAME\"."
 }
 
 
 # ----------- Entry point -----------
 
-if (( $# == 0 )); then
-  echo "Usage: build.sh <sites file> [target1] [target2] [...]"
+if (( $# < 3 )); then
+  echo "Usage: build.sh <build.conf> <targets.conf> <domains.conf> [target1] [target2] [...]"
   echo
-  echo "The build settings are read from build.conf next to this script, or"
-  echo "from the file named by the BUILD_CONF environment variable. Settings"
-  echo "in build.local.conf, if present, override them."
+  echo "  build.conf    how to build: version, cleaning, parallelism, build order,"
+  echo "                Gluon options. Settings in build.local.conf, if present,"
+  echo "                override it."
+  echo "  targets.conf  which hardware to build: GLUON_TARGETS."
+  echo "  domains.conf  which domains to build: SITES_FILE plus DOMAINS_INCLUDE"
+  echo "                and DOMAINS_EXCLUDE."
   echo
-  echo "Targets given on the command line override GLUON_TARGETS from the"
-  echo "configuration and are meant for individual test builds."
+  echo "Targets given after the three files override GLUON_TARGETS and are meant"
+  echo "for individual test builds."
+  echo
+  echo "Example: ./build.sh build.conf targets.conf domains.conf"
   exit 0
 fi
 
-if ! [ -f "$1" ]; then
-  abort "File \"$1\" does not exist."
-fi
-
-SITES_FILE="$1"
-shift
-
 SANDBOX_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-load_build_config
+# generate_site_config still works with paths relative to the current directory
+# ("templates/...", "assembled/...", "buildkeys/..."), so build.sh has to be
+# started from its own directory. Saying so plainly beats failing later with a
+# puzzling "cp: cannot stat 'templates/...'".
+if [ "$PWD" != "$SANDBOX_DIR" ]; then
+  abort "build.sh has to be started from its own directory ($SANDBOX_DIR), the current one is $PWD."
+fi
+
+# The three paths are made absolute right away: the build runs with the Gluon
+# directory as its working directory, so a relative path would stop resolving
+# once finalize_site copies the configuration next to the images.
+BUILD_CONF_FILE="$(to_absolute_path "$1")"
+TARGETS_CONF_FILE="$(to_absolute_path "$2")"
+DOMAINS_CONF_FILE="$(to_absolute_path "$3")"
+shift 3
+
+load_build_config   "$BUILD_CONF_FILE"
+load_targets_config "$TARGETS_CONF_FILE"
+load_domains_config "$DOMAINS_CONF_FILE"
 
 determine_sbranch "$SITES_FILE"
 
