@@ -11,10 +11,22 @@
 # die Regeln der Pakete. Hier geht es nur darum, einen Tippfehler zu finden,
 # bevor "make update" eine halbe Stunde laeuft.
 #
-# Aufruf von ueberall:  tests/check-site-conf.sh
+# Aufruf von ueberall:  tests/check-site-conf.sh [--optional]
+#
+# --optional: fehlt ein Lua-Interpreter, wird nur gewarnt statt abgebrochen.
+# Das nutzt build.sh, damit ein Build-Host ohne System-Lua nicht am Vorabcheck
+# scheitert. Ohne die Option ist ein fehlender Interpreter ein Fehler - sonst
+# meldet der Check gruen, ohne etwas geprueft zu haben.
 
 set -o nounset
 set -o pipefail
+
+OPTIONAL=false
+case "${1-}" in
+  --optional) OPTIONAL=true ;;
+  '') ;;
+  *) echo "Aufruf: $0 [--optional]" >&2; exit 1 ;;
+esac
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REPO_DIR="$( dirname "$SCRIPT_DIR" )"
@@ -41,6 +53,10 @@ for candidate in lua lua5.4 lua5.3 lua5.2 lua5.1; do
   fi
 done
 if [ -z "$LUA" ]; then
+  if [ "$OPTIONAL" = true ]; then
+    log_err "Kein Lua-Interpreter gefunden - Vorabcheck der site.conf uebersprungen."
+    exit 0
+  fi
   log_err "Kein Lua-Interpreter gefunden (gesucht: lua, lua5.4 ... lua5.1)."
   exit 1
 fi
