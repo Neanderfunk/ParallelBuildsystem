@@ -1078,6 +1078,13 @@ load_build_config   "$BUILD_CONF_FILE"
 load_targets_config "$TARGETS_CONF_FILE"
 load_domains_config "$DOMAINS_CONF_FILE"
 
+# Syntaxcheck der Lua-Dateien in den Templates, dauert zwei Sekunden. Ein
+# Tippfehler in der site.conf faellt damit hier auf und nicht erst nach
+# "make update" - Gluons eigene, semantische Pruefung (CheckSite) laeuft erst
+# dort. "--optional": fehlt auf dem Host ein Lua, wird gewarnt statt
+# abgebrochen.
+"$SANDBOX_DIR/tests/check-site-conf.sh" --optional
+
 determine_sbranch "$SITES_FILE"
 
 parse_sites_file "$SITES_FILE"
