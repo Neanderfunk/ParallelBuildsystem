@@ -60,7 +60,9 @@ if [ -z "$LUA" ]; then
   log_err "Kein Lua-Interpreter gefunden (gesucht: lua, lua5.4 ... lua5.1)."
   exit 1
 fi
-echo "Lua: $($LUA -v 2>&1 | head -1)"
+# Ohne "head": das schliesst die Pipe und kann dem Schreiber SIGPIPE
+# bescheren. sed beendet sich nach der ersten Zeile selbst.
+echo "Lua: $($LUA -v 2>&1 | sed -n '1p;1q')"
 
 # Nur echte Verzeichnisse pruefen. 86 der 87 Templates sind Symlinks auf ein
 # und dasselbe Verzeichnis (01_vel -> 05_mon -> common); ueber "templates/*"

@@ -5,6 +5,23 @@
 set -o errexit
 set -o nounset
 set -o pipefail
+set -o errtrace  # ERR-Trap gilt auch in Funktionen und Subshells
+
+# Sagt beim Abbruch, woran es lag. Ohne das endet der Bau seit der
+# Fehlererkennung wortlos mit einem Exitcode - genau das war frueher das
+# Problem, nur eine Ebene hoeher.
+on_error ()
+{
+  local -i EXIT_CODE="$?"
+  local SIGNAL_HINT=""
+  if (( EXIT_CODE > 128 )); then
+    SIGNAL_HINT=" (Signal $(( EXIT_CODE - 128 )): $(kill -l $(( EXIT_CODE - 128 )) 2>/dev/null || echo unbekannt))"
+  fi
+  echo >&2
+  echo "build.sh: Abbruch mit Exitcode $EXIT_CODE$SIGNAL_HINT" >&2
+  echo "  Zeile ${BASH_LINENO[0]}: $BASH_COMMAND" >&2
+}
+trap on_error ERR
 
 abort ()
 {
@@ -268,7 +285,11 @@ determine_sbranch ()
       # The date followed by the first 3 characters of the release branch
       # of the first site in the sites file, which yields e.g. "26030610sta".
       local RELBRANCH_PREFIX
-      RELBRANCH_PREFIX="$(grep -v -e '^#' -e '^[[:space:]]*$' -- "$SITES_FILE" | head -1 | cut -c1-3)"
+      # "grep -m1" statt "| head -1": head schliesst die Pipe nach der ersten
+      # Zeile, der schreibende grep bekommt dann SIGPIPE und endet mit 141.
+      # Zusammen mit pipefail und errexit bricht das den Bau ab - je nach
+      # Zeitverhalten, also sporadisch. grep hoert von sich aus auf.
+      RELBRANCH_PREFIX="$(grep -m1 -v -e '^#' -e '^[[:space:]]*$' -- "$SITES_FILE" | cut -c1-3)"
       SBRANCH="$(date +%y%m%d%H)$RELBRANCH_PREFIX"
       ;;
 
