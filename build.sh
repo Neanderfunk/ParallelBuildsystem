@@ -90,6 +90,143 @@ get_human_friendly_elapsed_time ()
 }
 
 
+# Stellt jeder Zeile einen Zeitstempel voran, sofern ein awk mit strftime da
+# ist. mawk und busybox awk koennen das nicht, deshalb die Pruefung beim Start.
+# Ohne passendes awk laeuft die Ausgabe unveraendert durch, statt zu scheitern.
+timestamp_lines ()
+{
+  if [ "$TIMESTAMP_AWK" = "" ]; then
+    cat
+  else
+    "$TIMESTAMP_AWK" '{ print strftime("[%H:%M:%S]"), $0; fflush() }'
+  fi
+}
+
+
+detect_timestamp_awk ()
+{
+  local CANDIDATE
+
+  TIMESTAMP_AWK=""
+
+  if [ "$BUILD_LOG_TIMESTAMPS" != true ]; then
+    return
+  fi
+
+  for CANDIDATE in gawk awk; do
+    if command -v "$CANDIDATE" >/dev/null 2>&1 &&
+       "$CANDIDATE" 'BEGIN { if (strftime("%s") == "") exit 1 }' >/dev/null 2>&1; then
+      TIMESTAMP_AWK="$CANDIDATE"
+      return
+    fi
+  done
+
+  echo "Note: no awk with strftime found, the build logs get no timestamps."
+}
+
+
+# Liefert "<commit>  (<branch>, sauber|N Aenderungen)" fuer ein Git-Verzeichnis.
+git_state ()
+{
+  local DIR="$1"
+
+  if [ ! -d "$DIR/.git" ]; then
+    echo "kein Git-Verzeichnis"
+    return
+  fi
+
+  local COMMIT BRANCH DIRTY_COUNT STATE
+
+  COMMIT="$(git -C "$DIR" rev-parse HEAD 2>/dev/null || echo "?")"
+  BRANCH="$(git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
+  DIRTY_COUNT="$(git -C "$DIR" status --porcelain 2>/dev/null | wc -l)"
+
+  if [ "$DIRTY_COUNT" -eq 0 ]; then
+    STATE="sauber"
+  else
+    STATE="$DIRTY_COUNT Aenderungen"
+  fi
+
+  echo "$COMMIT  ($BRANCH, $STATE)"
+}
+
+
+# Schreibt die Herkunftsdaten neben die Images. Ohne diese Datei laesst sich
+# hinterher nicht feststellen, aus welchem Stand ein Image entstanden ist -
+# die Konfigurationsdateien daneben zeigen nur den Inhalt, nicht die Version.
+write_build_info ()
+{
+  local SITE_IMAGE_DIR="$1"
+  local RELBRANCH="$2"
+  local TEMPLATE_NAME="$3"
+  local SITE_CODE="$4"
+
+  local INFO="$SITE_IMAGE_DIR/build-info.txt"
+  local MODULE MODULE_LIST PINNED ACTUAL
+
+  {
+    echo "Herkunft dieses Images"
+    echo "======================"
+    echo
+    echo "Release:        $SBRANCH"
+    echo "Domain:         $SITE_CODE (Template $TEMPLATE_NAME, Zweig $RELBRANCH)"
+    echo "Gebaut:         $(date -d "@$BUILD_START_EPOCH" "+%F %T") bis $(date "+%F %T")"
+    echo "Dauer:          $(( ( $(date +%s) - BUILD_START_EPOCH ) / 60 )) Minuten"
+    echo "Host:           $(uname -n) ($(uname -sr))"
+    echo "Aufruf:         $BUILD_COMMAND_LINE"
+    echo
+    echo "Firmware-Repo:  $(git_state "$SANDBOX_DIR")"
+    echo "Gluon:          $(git_state "$GLUON_DIR")"
+    echo
+    # Verglichen wird gegen den Zweig "base", nicht gegen HEAD: "make update"
+    # legt ueber base den Zweig "patched" mit Gluons eigenen Patches, HEAD
+    # weicht dort also planmaessig ab. Genauso prueft Gluons module_check.sh.
+    echo "Module, Soll (modules) gegen Ist (Zweig base):"
+
+    # In einer Subshell, die modules.sh eingelesen hat: dort stehen die
+    # Soll-Commits als <MODUL>_COMMIT bereit, so wie Gluons eigenes
+    # scripts/module_check.sh sie liest.
+    (
+      cd "$GLUON_DIR" || exit 0
+      export GLUON_SITEDIR="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
+      . scripts/modules.sh 2>/dev/null || exit 0
+
+      for MODULE in $GLUON_MODULES; do
+        VAR="$(echo "$MODULE" | tr '[:lower:]/' '[:upper:]_')_COMMIT"
+        eval "PINNED=\${$VAR:-}"
+        ACTUAL="$(git -C "$GLUON_DIR/$MODULE" rev-parse heads/base 2>/dev/null || echo "-")"
+        PATCHED="$(git -C "$GLUON_DIR/$MODULE" rev-parse HEAD 2>/dev/null || echo "-")"
+
+        if [ "$PINNED" = "$ACTUAL" ]; then
+          if [ "$PATCHED" = "$ACTUAL" ]; then
+            printf "  %-22s %s\n" "$MODULE" "$PINNED"
+          else
+            printf "  %-22s %s  (gepatcht: %s)\n" "$MODULE" "$PINNED" "${PATCHED:0:12}"
+          fi
+        else
+          printf "  %-22s Soll %s\n  %-22s Ist  %s   ABWEICHUNG\n" \
+                 "$MODULE" "${PINNED:-?}" "" "$ACTUAL"
+        fi
+      done
+    )
+
+    echo
+    echo "Targets:        ${TARGETS[*]}"
+    echo "Domains:        ${ALL_SITE_CODES[*]}"
+
+    local MANIFEST KERNEL_LINES
+    KERNEL_LINES="$(find "$GLUON_DIR/openwrt/bin/targets" -name '*.manifest' -exec \
+                    grep -hE '^(kmod-mac80211|kmod-mt7915e|kmod-ath10k|kmod-ath9k) ' {} + 2>/dev/null | sort -u || true)"
+    if [ -n "$KERNEL_LINES" ]; then
+      echo
+      echo "Kernel und WLAN-Treiber laut OpenWrt-Manifest:"
+      printf "%s\n" "$KERNEL_LINES" | sed 's/^/  /'
+    fi
+  } > "$INFO"
+
+  echo "Provenance written to \"$INFO\"."
+}
+
 get_site_log_filename ()
 {
   local TEMPLATE_NAME="$1"
@@ -114,6 +251,7 @@ set_config_defaults ()
   AUTOUPDATER_ENABLED=true
   VERBOSE_BUILD=true
   BUILD_LOG=false
+  BUILD_LOG_TIMESTAMPS=true
   GLUON_SITE_VERSION="$(date +%Y%m%d)"
   GLUONDEVICES=""
   SIGNKEY_FILE="untrustworthy-buildbot-signkey.priv"
@@ -689,6 +827,22 @@ finalize_site ()
   # that it stays visible with which settings they were built.
   cp -- "$SANDBOX_DIR/build.sh" "$SITE_IMAGE_DIR/"
   cp -- "$BUILD_CONF_FILE" "$TARGETS_CONF_FILE" "$DOMAINS_CONF_FILE" "$SITE_IMAGE_DIR/"
+
+  # Das Patch-Protokoll liegt eine Ebene ueber dem Site-Verzeichnis und wuerde
+  # vom rsync nicht erfasst. Es ist klein und zeigt, welche Patches beim
+  # Vorbereiten des Baums angewendet wurden.
+  if [ -f "$SANDBOX_DIR/assembled/prepare.log" ]; then
+    cp -- "$SANDBOX_DIR/assembled/prepare.log" "$SITE_IMAGE_DIR/"
+  fi
+
+  write_build_info "$SITE_IMAGE_DIR" "$RELBRANCH" "$TEMPLATE_NAME" "$SITE_CODE"
+
+  # Das Buildlog ist mit V=s mehrere Dutzend MB gross und laesst sich um etwa
+  # Faktor 25 packen. gzip statt xz, weil zgrep, zcat und zless ueberall da
+  # sind - xz kaeme auf zwei Drittel der Groesse, aber mit xzgrep.
+  if [ -f "$SITE_IMAGE_DIR/build.log" ]; then
+    gzip --force --best -- "$SITE_IMAGE_DIR/build.log"
+  fi
 }
 
 # Appends one record to the timing CSV. The file is meant for comparing build
@@ -786,7 +940,7 @@ run_build_step ()
                       "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" \
                       "$SITE_CODE" \
                       "$TARGET"
-  } 2>&1 | tee --append -- "$LOG_FILENAME"
+  } 2>&1 | timestamp_lines | tee --append -- "$LOG_FILENAME"
 
   read_uptime_as_integer
   local -i ELAPSED="$(( UPTIME - STEP_UPTIME_BEGIN ))"
@@ -837,7 +991,7 @@ build_all_images ()
                        "${ALL_SITE_GLUON_BRANCHES[0]}" \
                        "${ALL_SITE_TEMPLATE_NAMES[0]}" \
                        "${ALL_SITE_CODES[0]}"
-  } 2>&1 | tee -- "$PREPARE_LOG_FILENAME"
+  } 2>&1 | timestamp_lines | tee -- "$PREPARE_LOG_FILENAME"
 
   read_uptime_as_integer
   log_build_time prepare "-" "-" "-" "$(( UPTIME - PREPARE_UPTIME_BEGIN ))"
@@ -888,7 +1042,7 @@ build_all_images ()
       finalize_site "${ALL_SITE_RELBRANCHES[$site_index]}" \
                     "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" \
                     "${ALL_SITE_CODES[$site_index]}"
-    } 2>&1 | tee --append -- "$LOG_FILENAME"
+    } 2>&1 | timestamp_lines | tee --append -- "$LOG_FILENAME"
 
     read_uptime_as_integer
     log_build_time finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}" "-" "$(( UPTIME - STEP_UPTIME_BEGIN ))"
@@ -1079,6 +1233,12 @@ fi
 
 SANDBOX_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# Fuer build-info.txt: Startzeitpunkt und Aufruf festhalten, bevor die
+# Argumente durch "shift" verlorengehen.
+BUILD_START_EPOCH="$(date +%s)"
+printf -v BUILD_COMMAND_LINE "%q " "$0" "$@"
+BUILD_COMMAND_LINE="${BUILD_COMMAND_LINE% }"
+
 # generate_site_config still works with paths relative to the current directory
 # ("templates/...", "assembled/...", "buildkeys/..."), so build.sh has to be
 # started from its own directory. Saying so plainly beats failing later with a
@@ -1105,6 +1265,8 @@ load_domains_config "$DOMAINS_CONF_FILE"
 # dort. "--optional": fehlt auf dem Host ein Lua, wird gewarnt statt
 # abgebrochen.
 "$SANDBOX_DIR/tests/check-site-conf.sh" --optional
+
+detect_timestamp_awk
 
 determine_sbranch "$SITES_FILE"
 
