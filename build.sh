@@ -222,6 +222,76 @@ write_build_info ()
       echo "Kernel und WLAN-Treiber laut OpenWrt-Manifest:"
       printf "%s\n" "$KERNEL_LINES" | sed 's/^/  /'
     fi
+
+    # Die Patchliste aus dem Protokoll des Vorbereitungslaufs. Sie steht dort
+    # ohnehin, aber verstreut ueber Zehntausende Zeilen Buildausgabe.
+    if [ -f "$SANDBOX_DIR/assembled/prepare.log" ]; then
+      echo
+      awk '
+    {
+      line = $0
+      sub(/^\[[0-9:]+\] +/, "", line)
+
+      if (line ~ /Phase pre-update/)  { phase = "pre-update";  next }
+      if (line ~ /Phase post-update/) { phase = "post-update"; next }
+
+      if (line ~ /--- Patching module /) {
+        n = split(line, part, /\047/)
+        if (n >= 2) {
+          mod = part[2]
+          if (!(mod in seenmod)) { modorder[++nmod] = mod; seenmod[mod] = 1 }
+        }
+        next
+      }
+
+      if (line ~ /^Applying: /) {
+        subj = line; sub(/^Applying: /, "", subj)
+        gluonpatch[mod] = gluonpatch[mod] sprintf("      %s\n", subj)
+        gluoncount[mod]++
+        next
+      }
+
+      if (line ~ /\.patch: (angewendet|bereits angewendet|\047)/) {
+        name = line
+        sub(/^ +/, "", name)
+        sub(/.*\//, "", name)
+        res = name
+        sub(/^[^:]+: +/, "", res)
+        sub(/\.$/, "", res)
+        sub(/:.*/, "", name)
+        if (res ~ /^\047/) res = "schon im Baum"
+        ours[++nours] = sprintf("      %-40s %s\n", name, res)
+        ourphase[nours] = (phase == "" ? "?" : phase)
+        next
+      }
+    }
+    END {
+      print "Patches"
+      print "-------"
+      print ""
+      print "  Von Gluon auf die Module angewendet (make update):"
+      for (i = 1; i <= nmod; i++) {
+        m = modorder[i]
+        if (gluoncount[m] > 0) {
+          printf "    %s (%d):\n", m, gluoncount[m]
+          printf "%s", gluonpatch[m]
+        }
+      }
+      print ""
+      print "  Von uns angewendet (prepare.sh):"
+      for (p = 1; p <= 2; p++) {
+        ph = (p == 1 ? "pre-update" : "post-update")
+        first = 1
+        for (i = 1; i <= nours; i++) {
+          if (ourphase[i] == ph) {
+            if (first) { printf "    %s:\n", ph; first = 0 }
+            printf "%s", ours[i]
+          }
+        }
+      }
+    }
+' "$SANDBOX_DIR/assembled/prepare.log"
+    fi
   } > "$INFO"
 
   echo "Provenance written to \"$INFO\"."
