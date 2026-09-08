@@ -712,6 +712,183 @@ build_make_args ()
   append_quoted_arg  ARGS GLUON_AUTOUPDATER_BRANCH "$RELBRANCH"
 }
 
+# --------------------------------------------------------------------------
+# Zustand eines Laufs, damit ein abgebrochener Bau fortgesetzt werden kann
+#
+# Der Bau schreibt seine Images nach images/running und benennt das Verzeichnis
+# erst ganz am Ende nach images/images-<epoch> um. Ein liegengebliebenes
+# images/running heisst deshalb: der Lauf ist nicht durchgelaufen. Genau daran
+# wird ein Resume erkannt, und die Zustandsdatei liegt darin - sie entsteht und
+# verschwindet also mit dem Lauf, ohne eigene Lebensdauer.
+#
+# Bis hierher war ein liegengebliebenes images/running still gefaehrlich: der
+# naechste Lauf schrieb hinein und benannte am Ende alles zusammen um. Images
+# aus zwei Laeufen mit verschiedenen SBRANCHes landeten in einem Verzeichnis,
+# und das Manifest deckte nur einen davon ab. Ohne --resume bricht der Lauf
+# jetzt ab, statt das stillschweigend zu tun.
+
+STATE_FILE=""
+
+# Kennzeichnet die Eingaben eines Laufs. Weicht der Fingerabdruck beim Resume
+# ab, wurde in der Zwischenzeit etwas geaendert - dann wird abgelehnt, denn
+# sonst mischten sich Images aus zwei Quellstaenden in einem Manifest.
+#
+# Erfasst wird, was in die Images eingeht: Templates, Patches, die vier
+# Konfigurationsdateien und die Liste dessen, was gebaut werden soll. Bewusst
+# nicht ueber "git status", denn dann haette schon ein Commit an docs/ oder eine
+# Korrektur an build.sh selbst die Fortsetzung verweigert - beides aendert kein
+# einziges Byte im Image.
+#
+# Ebenfalls nicht erfasst: SBRANCH, DATE_SUFFIX und GLUON_SITE_VERSION. Die
+# gehoeren zum Lauf und werden uebernommen statt verglichen, sie waeren beim
+# Resume ohnehin immer anders.
+build_fingerprint ()
+{
+  local DIR
+  for DIR in "$SANDBOX_DIR/templates" "$SANDBOX_DIR/patches"; do
+    if [ ! -d "$DIR" ]; then
+      abort "The run fingerprint needs the directory \"$DIR\", which does not exist."
+    fi
+  done
+
+  local LISTING
+  LISTING="$( {
+    echo "order=$BUILD_ORDER"
+    echo "targets=${BUILD_TARGETS[*]}"
+    echo "domains=${ALL_SITE_TEMPLATE_NAMES[*]}"
+
+    local FILE
+    for FILE in "$BUILD_CONF_FILE" \
+                "$SANDBOX_DIR/build.local.conf" \
+                "$TARGETS_CONF_FILE" \
+                "$DOMAINS_CONF_FILE" \
+                "$SITES_FILE"; do
+      if [ -f "$FILE" ]; then
+        echo "datei=$(basename -- "$FILE")"
+        cat -- "$FILE"
+      fi
+    done
+
+    # Editorsicherungen ("modules~") liegen mit im Baum, gehen aber nicht in den
+    # Bau ein. Sortiert, damit die Reihenfolge nicht vom Dateisystem abhaengt.
+    find -L "$SANDBOX_DIR/templates" "$SANDBOX_DIR/patches" \
+         -type f  ! -name '*~'  -print0 \
+      | sort --zero-terminated \
+      | xargs --null --no-run-if-empty sha256sum
+  } )"
+
+  # Faende find nichts, waere der Fingerabdruck der immergleiche Hash der drei
+  # Kopfzeilen - und jede Fortsetzung ginge durch, egal was sich geaendert hat.
+  local -i FILE_COUNT
+  FILE_COUNT="$(grep -c '^[0-9a-f]\{64\}  ' <<< "$LISTING" || true)"
+  if (( FILE_COUNT == 0 )); then
+    abort "The run fingerprint found no file at all under \"$SANDBOX_DIR/templates\" and \"$SANDBOX_DIR/patches\"."
+  fi
+
+  sha256sum <<< "$LISTING" | cut -d" " -f1
+}
+
+state_init ()
+{
+  local RUNNING_DIR="$SANDBOX_DIR/images/running"
+  STATE_FILE="$RUNNING_DIR/.build-state"
+
+  mkdir -p "$RUNNING_DIR"
+
+  # Erst in eine Variable: in der Ersetzung unten wuerde ein Fehlschlag von
+  # errexit nicht bemerkt, und die Datei enthielte einen leeren Fingerabdruck.
+  local FINGERPRINT
+  FINGERPRINT="$(build_fingerprint)"
+
+  {
+    echo "# State of a running build.sh run. Removed when the run completes and"
+    echo "# the directory gets its final name."
+    echo "sbranch=$SBRANCH"
+    echo "date_suffix=$DATE_SUFFIX"
+    echo "site_version=$GLUON_SITE_VERSION"
+    echo "fingerprint=$FINGERPRINT"
+    echo "started=$(date --iso-8601=seconds)"
+  } > "$STATE_FILE"
+  sync
+}
+
+# Uebernimmt SBRANCH und DATE_SUFFIX aus der Zustandsdatei. Beide muessen ueber
+# den ganzen Bau gleich bleiben: SBRANCH steht im Imagenamen und im Manifest
+# und wechselt bei SBRANCH_MODE=date stuendlich, DATE_SUFFIX benennt das
+# Ausgabeverzeichnis, GLUON_SITE_VERSION steht in der site.conf und wechselt
+# taeglich. Neu berechnet ergaeben sie einen Lauf mit zwei Release-Strings.
+state_resume ()
+{
+  local RUNNING_DIR="$SANDBOX_DIR/images/running"
+  STATE_FILE="$RUNNING_DIR/.build-state"
+
+  if [ ! -f "$STATE_FILE" ]; then
+    abort "\"$RUNNING_DIR\" exists, but without a state file: it comes from a run of an older build.sh that had no resume support. Remove the directory and build afresh."
+  fi
+
+  local OLD_FINGERPRINT NEW_FINGERPRINT
+  OLD_FINGERPRINT="$(sed -n 's/^fingerprint=//p' "$STATE_FILE")"
+  NEW_FINGERPRINT="$(build_fingerprint)"
+
+  if [ "$OLD_FINGERPRINT" != "$NEW_FINGERPRINT" ]; then
+    abort "This run cannot be resumed: the inputs have changed since it was interrupted - the templates, the patches, one of the configuration files, or the target or domain list. Images built from two different sources do not belong under one manifest. Remove \"$RUNNING_DIR\" and build afresh."
+  fi
+
+  SBRANCH="$(sed -n 's/^sbranch=//p' "$STATE_FILE")"
+  DATE_SUFFIX="$(sed -n 's/^date_suffix=//p' "$STATE_FILE")"
+  GLUON_SITE_VERSION="$(sed -n 's/^site_version=//p' "$STATE_FILE")"
+
+  [ -n "$SBRANCH" ] || abort "The state file has no sbranch."
+  [ -n "$DATE_SUFFIX" ] || abort "The state file has no date_suffix."
+  [ -n "$GLUON_SITE_VERSION" ] || abort "The state file has no site_version."
+
+  # "make clean" wuerde genau das wegwerfen, worauf fortgesetzt werden soll.
+  if [ "$MAKECLEAN" = true ]; then
+    echo "Turning MAKECLEAN off for the resumed run: it would delete the very tree that is being resumed on."
+    MAKECLEAN=false
+  fi
+
+  local -i DONE_BUILDS DONE_DOMAINS
+  DONE_BUILDS="$(  grep -c "^build	"    "$STATE_FILE" || true )"
+  DONE_DOMAINS="$( grep -c "^finalize	" "$STATE_FILE" || true )"
+
+  echo "Resuming the run started at $(sed -n 's/^started=//p' "$STATE_FILE")."
+  echo "  Release:      $SBRANCH"
+  echo "  Site version: $GLUON_SITE_VERSION"
+  echo "  Output dir:   images-$DATE_SUFFIX"
+  echo "  Already done: $DONE_BUILDS of $(( ${#ALL_SITE_TEMPLATE_NAMES[@]} * ${#BUILD_TARGETS[@]} )) domain x target units, $DONE_DOMAINS of ${#ALL_SITE_TEMPLATE_NAMES[@]} domains finalized"
+
+  echo "resumed=$(date --iso-8601=seconds)" >> "$STATE_FILE"
+  sync
+}
+
+# Angehaengt wird erst NACH einer fertigen Einheit: ein harter Abbruch
+# mittendrin darf sie nicht als erledigt hinterlassen. Lieber einmal zu viel
+# bauen als ein halbes Image ausliefern.
+#
+# Das "sync" ist der eigentliche Punkt der Uebung. Genau der Fall, fuer den es
+# den Resume gibt - die USV meldet fuenf Minuten und der Hypervisor faehrt
+# herunter -, ist auch der Fall, in dem ein noch im Seitencache haengender
+# Anhang verloren ginge. Es faellt einmal je fertigem Target an, also im
+# Minutenabstand.
+state_mark ()
+{
+  local KIND="$1" TEMPLATE_NAME="$2" SITE_CODE="$3" TARGET="${4:--}"
+  [ -n "$STATE_FILE" ] || return 0
+  printf '%s\t%s\t%s\t%s\n' "$KIND" "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET" >> "$STATE_FILE"
+  sync
+}
+
+state_has ()
+{
+  local KIND="$1" TEMPLATE_NAME="$2" SITE_CODE="$3" TARGET="${4:--}"
+  [ -n "$STATE_FILE" ] || return 1
+  # -x, damit die Zeile ganz passen muss: ein Teiltreffer haette ein Target
+  # als erledigt gelesen, dessen Name nur der Anfang eines anderen ist.
+  grep -qxF "$(printf '%s\t%s\t%s\t%s' "$KIND" "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET")" "$STATE_FILE"
+}
+
+
 # Holt vorab alle Quellen, die der Bau braucht, mit Wiederholung.
 #
 # Warum vorweg: ohne das werden Quellen erst waehrend des Bauens geholt. Ein
@@ -1066,9 +1243,15 @@ run_build_step ()
   local -i target_index="$2"
 
   local SITE_CODE="${ALL_SITE_CODES[$site_index]}"
+  local TEMPLATE_NAME="${ALL_SITE_TEMPLATE_NAMES[$site_index]}"
   local TARGET="${TARGETS[target_index]}"
 
-  get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "$SITE_CODE"
+  if state_has build "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET"; then
+    echo "Skipping site code $SITE_CODE, target $TARGET: already built in the interrupted run."
+    return
+  fi
+
+  get_site_log_filename  "$TEMPLATE_NAME"  "$SITE_CODE"
 
   local UPTIME
   read_uptime_as_integer
@@ -1088,23 +1271,37 @@ run_build_step ()
   get_human_friendly_elapsed_time "$ELAPSED"
   echo "Finished site code $SITE_CODE, target $TARGET. Elapsed time: $ELAPSED_TIME_STR."
 
-  log_build_time build "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "$SITE_CODE" "$TARGET" "$ELAPSED"
+  log_build_time build "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET" "$ELAPSED"
+
+  # Erst hier, nach der Pipeline. Mit errexit und pipefail kommt der Ablauf nur
+  # bis hierher, wenn make durchgelaufen ist.
+  state_mark build "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET"
+}
+
+# Targets given on the command line win, otherwise the enabled entries of
+# GLUON_TARGETS from the build configuration are used.
+#
+# Steht vor dem Bau, weil der Fingerabdruck des Laufs die Targetliste enthaelt:
+# eine Fortsetzung mit anderer Liste ist keine Fortsetzung.
+declare -a BUILD_TARGETS=()
+
+resolve_targets ()
+{
+  BUILD_TARGETS=("$@")
+
+  if (( ${#BUILD_TARGETS[@]} == 0 )); then
+    local -a ENABLED_TARGETS
+    get_enabled_targets
+    BUILD_TARGETS=( "${ENABLED_TARGETS[@]}" )
+    echo "Building the ${#BUILD_TARGETS[@]} targets enabled in the build configuration."
+  else
+    echo "Building the ${#BUILD_TARGETS[@]} targets given on the command line."
+  fi
 }
 
 build_all_images ()
 {
-  # Targets given on the command line win, otherwise the enabled entries of
-  # GLUON_TARGETS from the build configuration are used.
-  local -a TARGETS=("$@")
-
-  if (( ${#TARGETS[@]} == 0 )); then
-    local -a ENABLED_TARGETS
-    get_enabled_targets
-    TARGETS=( "${ENABLED_TARGETS[@]}" )
-    echo "Building the ${#TARGETS[@]} targets enabled in the build configuration."
-  else
-    echo "Building the ${#TARGETS[@]} targets given on the command line."
-  fi
+  local -a TARGETS=( "${BUILD_TARGETS[@]}" )
 
   # Opened before the fetch, so that a run that already fails there is recorded.
   # RUN_UPTIME_BEGIN is deliberately global: the EXIT trap still needs it after
@@ -1171,6 +1368,11 @@ build_all_images ()
   # which under BUILD_ORDER=target is only the case once everything is done.
   for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
 
+    if state_has finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"; then
+      echo "Skipping site code ${ALL_SITE_CODES[$site_index]}: already finalized in the interrupted run."
+      continue
+    fi
+
     get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
 
     local UPTIME
@@ -1185,6 +1387,8 @@ build_all_images ()
 
     read_uptime_as_integer
     log_build_time finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}" "-" "$(( UPTIME - STEP_UPTIME_BEGIN ))"
+
+    state_mark finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"
   done
 
   read_uptime_as_integer
@@ -1195,6 +1399,11 @@ build_all_images ()
   echo "Total build time with BUILD_ORDER=$BUILD_ORDER: $ELAPSED_TIME_STR."
 
   popd >/dev/null
+
+  # Der Lauf ist durch, die Zustandsdatei hat ihren Zweck erfuellt. Sie wird
+  # geloescht, bevor das Verzeichnis seinen endgueltigen Namen bekommt: ein
+  # images-<datum> mit .build-state darin saehe aus wie ein halber Lauf.
+  rm -f "$SANDBOX_DIR/images/running/.build-state"
 
   # rename output to images with timestamp
   mv "./images/running" "./images/images-$DATE_SUFFIX"
@@ -1403,7 +1612,45 @@ parse_sites_file ()
 }
 
 
+# --------------------------------------------------------------------------
+# Entscheidet, ob dieser Lauf neu anfaengt oder einen abgebrochenen fortsetzt.
+#
+# Muss vor generate_all_site_configs stehen: SBRANCH wird dort in die
+# site.conf hineingeschrieben, ein spaeter uebernommener kaeme zu spaet.
+prepare_run_state ()
+{
+  local RUNNING_DIR="$SANDBOX_DIR/images/running"
+
+  if [ "$RESUME" = true ]; then
+    if [ ! -d "$RUNNING_DIR" ]; then
+      abort "--resume was given, but \"$RUNNING_DIR\" does not exist. There is no interrupted run to resume; without --resume build.sh starts afresh."
+    fi
+    state_resume
+    return
+  fi
+
+  if [ -d "$RUNNING_DIR" ]; then
+    abort "\"$RUNNING_DIR\" is still there, so an earlier run did not complete. Either resume it with --resume, or remove the directory. (Building into it is not an option: everything in it would be renamed together at the end, putting images of two runs with different release strings under one manifest.)"
+  fi
+
+  state_init
+}
+
+
 # ----------- Entry point -----------
+
+# Optionen von den Stellungsargumenten trennen, damit --resume vor wie hinter
+# den drei Konfigurationsdateien stehen darf.
+RESUME=false
+
+declare -a POSITIONAL_ARGS=()
+for ARG in "$@"; do
+  case "$ARG" in
+    --resume) RESUME=true ;;
+    *)        POSITIONAL_ARGS+=( "$ARG" ) ;;
+  esac
+done
+set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
 
 if (( $# < 3 )); then
   echo "Usage: build.sh <build.conf> <targets.conf> <domains.conf> [target1] [target2] [...]"
@@ -1417,6 +1664,11 @@ if (( $# < 3 )); then
   echo
   echo "Targets given after the three files override GLUON_TARGETS and are meant"
   echo "for individual test builds."
+  echo
+  echo "  --resume      Resumes an interrupted run: builds only what is still"
+  echo "                missing and keeps that run's release string and output"
+  echo "                directory. An interrupted run is recognised by a"
+  echo "                left-over images/running directory."
   echo
   echo "Example: ./build.sh build.conf targets.conf domains.conf"
   exit 0
@@ -1463,10 +1715,15 @@ determine_sbranch "$SITES_FILE"
 
 parse_sites_file "$SITES_FILE"
 
+# Vor prepare_run_state, denn beides geht in den Fingerabdruck des Laufs ein.
+resolve_targets "$@"
+
+DATE_SUFFIX="$(date "$DATE_SUFFIX_FORMAT")"
+
+prepare_run_state
+
 generate_all_site_configs
 
 GLUON_DIR="$SANDBOX_DIR/gluon"
 
-DATE_SUFFIX="$(date "$DATE_SUFFIX_FORMAT")"
-
-build_all_images "$@"
+build_all_images
