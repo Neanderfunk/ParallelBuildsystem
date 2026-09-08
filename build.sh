@@ -1211,7 +1211,12 @@ parse_sites_file ()
 
   local LINE
   local COMPONENTS
+  local -a SELECTED_LINES=()
+  local -a SELECTED_TEMPLATES=()
 
+  # Erster Durchgang: lesen und die ausgewaehlten Zeilen einsammeln. Ausgewertet
+  # werden sie erst im zweiten Durchgang - dazwischen wird die Reihenfolge
+  # festgelegt, und die kommt aus DOMAINS_INCLUDE und nicht aus dieser Datei.
   while read -r LINE; do
 
     # We could allow comments in the file. Here we would remove them.
@@ -1234,6 +1239,62 @@ parse_sites_file ()
     if ! domain_is_selected "${COMPONENTS[2]}"; then
       continue
     fi
+
+    SELECTED_LINES+=( "$LINE" )
+    SELECTED_TEMPLATES+=( "${COMPONENTS[2]}" )
+
+  done < "$FILENAME"
+
+  if (( ${#ALL_TEMPLATE_NAMES_IN_FILE[@]} == 0 )); then
+    abort "Could not read any sites from the sites file."
+  fi
+
+  check_domain_selection
+
+  if (( ${#SELECTED_LINES[@]} == 0 )); then
+    abort "The domain configuration selects none of the ${#ALL_TEMPLATE_NAMES_IN_FILE[@]} domains in \"$FILENAME\"."
+  fi
+
+  # Die Bauabfolge steht in DOMAINS_INCLUDE. Vorher war es die Zeilenfolge der
+  # Sites-Datei, und die ist nach ganz anderen Gesichtspunkten sortiert - wer
+  # steuern wollte, welche Domain zuerst fertig wird, musste dort umsortieren.
+  # "all" steht fuer alles noch nicht Genannte und behaelt dafuer die
+  # Dateireihenfolge bei, damit ( all ) sich verhaelt wie bisher. Gemischt ist
+  # ebenfalls sinnvoll: ( 21_dias all ) baut Dias zuerst, den Rest wie gehabt.
+  local -a ORDER=()
+  local -a TAKEN=()
+  local ENTRY
+  local i
+
+  for (( i = 0; i < ${#SELECTED_LINES[@]}; i++ )); do
+    TAKEN[$i]=false
+  done
+
+  for ENTRY in "${DOMAINS_INCLUDE[@]}"; do
+    for (( i = 0; i < ${#SELECTED_LINES[@]}; i++ )); do
+      if [[ ${TAKEN[$i]} == true ]]; then
+        continue
+      fi
+      if [[ $ENTRY == all || $ENTRY == "${SELECTED_TEMPLATES[$i]}" ]]; then
+        ORDER+=( "$i" )
+        TAKEN[$i]=true
+      fi
+    done
+  done
+
+  # Sicherheitsnetz. Hier darf nichts uebrig bleiben - ausgewaehlt wurde eine
+  # Zeile ja nur, weil DOMAINS_INCLUDE sie nennt. Bliebe doch etwas liegen,
+  # wird es angehaengt statt still weggelassen.
+  for (( i = 0; i < ${#SELECTED_LINES[@]}; i++ )); do
+    if [[ ${TAKEN[$i]} != true ]]; then
+      ORDER+=( "$i" )
+    fi
+  done
+
+  # Zweiter Durchgang: in der festgelegten Reihenfolge auswerten.
+  for i in "${ORDER[@]}"; do
+
+    IFS=$' \t'  read -r -a COMPONENTS <<< "$(echo ${SELECTED_LINES[$i]}|tr -s '\t')"
 
     ALL_SITE_RELBRANCHES+=( "${COMPONENTS[0]}" )
     ALL_SITE_GLUON_BRANCHES+=( "${COMPONENTS[1]}" )
@@ -1269,19 +1330,10 @@ parse_sites_file ()
     ALL_SITE_KEY_FILE_SSHS+=( "${COMPONENTS[31]}" )
     ALL_SITE_DOMAIN_LONGNAMES+=( "${COMPONENTS[32]}" )
 
-  done < "$FILENAME"
-
-  if (( ${#ALL_TEMPLATE_NAMES_IN_FILE[@]} == 0 )); then
-    abort "Could not read any sites from the sites file."
-  fi
-
-  check_domain_selection
-
-  if (( ${#ALL_SITE_RELBRANCHES[@]} == 0 )); then
-    abort "The domain configuration selects none of the ${#ALL_TEMPLATE_NAMES_IN_FILE[@]} domains in \"$FILENAME\"."
-  fi
+  done
 
   echo "Building ${#ALL_SITE_RELBRANCHES[@]} of ${#ALL_TEMPLATE_NAMES_IN_FILE[@]} domains from \"$FILENAME\"."
+  echo "Build order: ${ALL_SITE_TEMPLATE_NAMES[*]}"
 }
 
 
