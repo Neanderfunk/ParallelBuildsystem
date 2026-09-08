@@ -332,6 +332,10 @@ set_config_defaults ()
   BUILD_ORDER="domain"
   BUILD_TIMES_FILE="$SANDBOX_DIR/build-times.csv"
 
+  # Quellen vorab holen, mit Wiederholung. 0 Versuche schaltet den Schritt ab.
+  DOWNLOAD_ATTEMPTS=5
+  DOWNLOAD_RETRY_DELAY=30
+
   DATE_SUFFIX_FORMAT="+%s"
   SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
 }
@@ -708,6 +712,64 @@ build_make_args ()
   append_quoted_arg  ARGS GLUON_AUTOUPDATER_BRANCH "$RELBRANCH"
 }
 
+# Holt vorab alle Quellen, die der Bau braucht, mit Wiederholung.
+#
+# Warum vorweg: ohne das werden Quellen erst waehrend des Bauens geholt. Ein
+# Netzaussetzer in Stunde drei beendet dann den ganzen Lauf, weil "make" mit
+# ungleich null zurueckkommt und errexit greift. Vorgezogen trifft derselbe
+# Aussetzer einen billigen, beliebig wiederholbaren Schritt am Anfang - und was
+# einmal in dl/ liegt, bleibt liegen, ein spaeterer Lauf braucht dafuer kein
+# Netz mehr. Besonders fuer die git-basierten Pakete des Feeds: die haben
+# keinen PKG_MIRROR_HASH und werden je Architektur frisch von GitHub geklont.
+#
+# Einmal je Target mit dem ersten Site-Verzeichnis genuegt: die Paketauswahl
+# steht in image-customization.lua, und alle Domain-Vorlagen sind Symlinks auf
+# "common", waehlen also dieselben Pakete.
+#
+# Sollte das einmal nicht mehr stimmen, faellt trotzdem nichts aus: was hier
+# fehlt, wird beim Bauen nachgeholt wie bisher. Der Schritt beschleunigt und
+# entschaerft, er ist keine Voraussetzung - deshalb bricht er auch nur nach
+# DOWNLOAD_ATTEMPTS vergeblichen Versuchen ab und nicht beim ersten.
+download_sources ()
+{
+  local ARGS="$1"
+
+  if (( DOWNLOAD_ATTEMPTS <= 0 )); then
+    echo "Skipping the download step (DOWNLOAD_ATTEMPTS is $DOWNLOAD_ATTEMPTS)."
+    return 0
+  fi
+
+  local -i target_index
+  local TARGET MAKE_CMD
+  local -i attempt
+
+  for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
+
+    TARGET="${TARGETS[target_index]}"
+    printf -v MAKE_CMD "make download GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
+
+    for (( attempt=1; attempt <= DOWNLOAD_ATTEMPTS; attempt += 1 )); do
+
+      echo "Downloading the sources for target $TARGET (attempt $attempt of $DOWNLOAD_ATTEMPTS) ..."
+      echo "$MAKE_CMD"
+
+      if eval "$MAKE_CMD"; then
+        break
+      fi
+
+      if (( attempt >= DOWNLOAD_ATTEMPTS )); then
+        abort "Could not download the sources for target $TARGET after $DOWNLOAD_ATTEMPTS attempts."
+      fi
+
+      echo "Download failed, retrying in $DOWNLOAD_RETRY_DELAY seconds ..."
+      sleep "$DOWNLOAD_RETRY_DELAY"
+
+    done
+
+  done
+}
+
+
 # Brings the Gluon tree into the state that every domain is then built against:
 # optionally reset it, optionally clean it for all targets, apply the patches,
 # and run "make update".
@@ -811,6 +873,10 @@ prepare_gluon_tree ()
   # external repositories.
   echo "Applying the post-update patches from patches/ ..."
   "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" post-update
+
+  # Erst jetzt, denn die post-update-Patches aendern Paketdefinitionen im
+  # OpenWrt-Baum - vorher gezogen waeren es teils die falschen Quellen.
+  download_sources "$ARGS"
 }
 
 # Builds one target of one domain. This is the unit of work that the two loop
