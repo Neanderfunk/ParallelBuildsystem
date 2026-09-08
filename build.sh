@@ -251,7 +251,10 @@ write_build_info ()
         next
       }
 
-      if (line ~ /\.patch: (angewendet|bereits angewendet|\047)/) {
+      # "kopiert" und "liegt bereits im Baum" kommen von copy_into_tree:
+      # Patches, die wir nur ablegen und die OpenWrt selbst anwendet.
+      # Ohne sie fehlten hier der Zbit- und der MIPS-TLB-Patch.
+      if (line ~ /\.patch: (angewendet|bereits angewendet|kopiert|liegt bereits im Baum|\047)/) {
         name = line
         sub(/^ +/, "", name)
         sub(/.*\//, "", name)
