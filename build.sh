@@ -1612,6 +1612,30 @@ parse_sites_file ()
 }
 
 
+# Sagt, was in einem liegengebliebenen Lauf steckt. Wird sowohl vor dem
+# Wegwerfen (--restart) als auch beim Abbruch ohne Option aufgerufen: in beiden
+# Faellen will man wissen, wieviel Arbeit da liegt, bevor man entscheidet.
+report_discarded_run ()
+{
+  local RUNNING_DIR="$1"
+  local ZUSTAND="$RUNNING_DIR/.build-state"
+
+  if [ ! -f "$ZUSTAND" ]; then
+    echo "There is a left-over \"$RUNNING_DIR\" without a state file (from an older build.sh)."
+    return
+  fi
+
+  local -i FERTIGE_BAUTEN FERTIGE_DOMAINS
+  FERTIGE_BAUTEN="$(  grep -c "^build	"    "$ZUSTAND" || true )"
+  FERTIGE_DOMAINS="$( grep -c "^finalize	" "$ZUSTAND" || true )"
+
+  echo "A previous run is still lying in \"$RUNNING_DIR\":"
+  echo "  Started:      $(sed -n 's/^started=//p' "$ZUSTAND")"
+  echo "  Release:      $(sed -n 's/^sbranch=//p' "$ZUSTAND")"
+  echo "  Already done: $FERTIGE_BAUTEN domain x target units, $FERTIGE_DOMAINS domains finalized"
+}
+
+
 # --------------------------------------------------------------------------
 # Entscheidet, ob dieser Lauf neu anfaengt oder einen abgebrochenen fortsetzt.
 #
@@ -1621,6 +1645,10 @@ prepare_run_state ()
 {
   local RUNNING_DIR="$SANDBOX_DIR/images/running"
 
+  if [ "$RESUME" = true ] && [ "$RESTART" = true ]; then
+    abort "--resume and --restart contradict each other: one continues the interrupted run, the other throws it away."
+  fi
+
   if [ "$RESUME" = true ]; then
     if [ ! -d "$RUNNING_DIR" ]; then
       abort "--resume was given, but \"$RUNNING_DIR\" does not exist. There is no interrupted run to resume; without --resume build.sh starts afresh."
@@ -1629,8 +1657,24 @@ prepare_run_state ()
     return
   fi
 
+  if [ "$RESTART" = true ]; then
+    if [ -d "$RUNNING_DIR" ]; then
+      # Sagen, was weggeworfen wird, bevor es weg ist. Ein Lauf, der schon
+      # zwanzig Domains fertig hatte, ist mehrere Stunden Arbeit - wer sich in
+      # der Option vergreift, soll das im Log wiederfinden.
+      report_discarded_run "$RUNNING_DIR"
+      echo "Removing \"$RUNNING_DIR\" and starting afresh (--restart)."
+      rm -rf -- "$RUNNING_DIR"
+    else
+      echo "--restart was given, but there is no left-over run; starting afresh anyway."
+    fi
+    state_init
+    return
+  fi
+
   if [ -d "$RUNNING_DIR" ]; then
-    abort "\"$RUNNING_DIR\" is still there, so an earlier run did not complete. Either resume it with --resume, or remove the directory. (Building into it is not an option: everything in it would be renamed together at the end, putting images of two runs with different release strings under one manifest.)"
+    report_discarded_run "$RUNNING_DIR"
+    abort "\"$RUNNING_DIR\" is still there, so an earlier run did not complete. Continue it with --resume, throw it away with --restart, or remove the directory by hand. (Building into it is not an option: everything in it would be renamed together at the end, putting images of two runs with different release strings under one manifest.)"
   fi
 
   state_init
@@ -1642,12 +1686,14 @@ prepare_run_state ()
 # Optionen von den Stellungsargumenten trennen, damit --resume vor wie hinter
 # den drei Konfigurationsdateien stehen darf.
 RESUME=false
+RESTART=false
 
 declare -a POSITIONAL_ARGS=()
 for ARG in "$@"; do
   case "$ARG" in
-    --resume) RESUME=true ;;
-    *)        POSITIONAL_ARGS+=( "$ARG" ) ;;
+    --resume)  RESUME=true ;;
+    --restart) RESTART=true ;;
+    *)         POSITIONAL_ARGS+=( "$ARG" ) ;;
   esac
 done
 set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
@@ -1669,6 +1715,10 @@ if (( $# < 3 )); then
   echo "                missing and keeps that run's release string and output"
   echo "                directory. An interrupted run is recognised by a"
   echo "                left-over images/running directory."
+  echo "  --restart     Throws a left-over run away and starts from scratch:"
+  echo "                images/running is removed, and release string and output"
+  echo "                directory are formed anew. What the old run had already"
+  echo "                built is reported before it is deleted."
   echo
   echo "Example: ./build.sh build.conf targets.conf domains.conf"
   exit 0
