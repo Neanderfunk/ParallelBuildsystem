@@ -1144,7 +1144,12 @@ build_site_target ()
   MAKE_CMD+=" $ARGS"
   MAKE_CMD+=" -j $JOB_COUNT  --output-sync=recurse"
   if [ ! -z "$GLUONDEVICES" ] && [ "${#GLUONDEVICES}" -gt 1 ]; then
-    MAKE_CMD+=" GLUON_DEVICES=$GLUONDEVICES "
+    # Gequotet wie jedes andere Argument auch: MAKE_CMD laeuft durch eval, und
+    # unquotet zerfaellt eine Liste mit mehr als einem Geraet in Woerter. Das
+    # zweite und jedes weitere wurde dann als make-Ziel gelesen -
+    # "No rule to make target 'ubiquiti-edgerouter-x-sfp-ka'". Mit einem
+    # einzelnen Geraet fiel es nicht auf.
+    append_quoted_arg  MAKE_CMD  GLUON_DEVICES  "$GLUONDEVICES"
     echo "for GLUONDEVICEs $GLUONDEVICES"
   fi
   echo "$MAKE_CMD"
