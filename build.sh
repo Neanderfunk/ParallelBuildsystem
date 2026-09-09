@@ -1149,6 +1149,71 @@ build_site_target ()
   fi
   echo "$MAKE_CMD"
   eval "$MAKE_CMD"
+
+  collect_opkg_feeds "$TARGET"
+}
+
+# Sammelt die opkg-Feeds aus bin/packages/<arch>/ ein.
+#
+# Gluons scripts/copy_output.lua nimmt allein bin/targets/<target>/packages mit,
+# also den Target-Baum mit den Kernelmodulen, und das auch nur bei einem Lauf
+# ohne GLUON_DEVICES (dortige Zeile 94). Die Feeds mit den uebrigen Paketen
+# bleiben liegen:
+#
+#   gluon, gluon_base   Gluons eigene Pakete
+#   community           freifunk-gluon/community-packages
+#   neanderfunk         unser eigener Feed, 13 Pakete
+#   base, packages, ... was OpenWrt fuer diesen Bau uebersetzt hat
+#
+# Damit war bisher keines unserer 13 Pakete auf einem Knoten nachinstallierbar.
+#
+# Je Target, nicht einmal am Ende: bei MAKECLEAN=true reicht "make clean" an
+# OpenWrt durch und raeumt bin/ vollstaendig weg, der naechste Target-Bau faende
+# sonst nichts mehr vor.
+#
+# Ziel ist nach Target geschluesselt, nicht nach Architektur - genau wie der
+# schon veroeffentlichte modules-Feed (/firmware/modules/gluon-<release>/<target>).
+# Nach Architektur waere kuerzer, aber ath79-generic, -nand und -mikrotik teilen
+# sich mips_24kc: die drei Laeufe erzeugen je einen eigenen Packages-Index ueber
+# ihre je eigene Paketauswahl, und beim Zusammenkopieren gaebe der letzte den
+# Ton an. Die ipk-Dateien der anderen blieben liegen, waeren aber nicht mehr
+# indiziert. Ein Neuerzeugen des Index scheidet aus: die Knoten pruefen
+# Signaturen (option check_signature in /etc/opkg.conf), und Packages.sig traegt
+# unseren Bau-Schluessel. Also lieber ein paar Megabyte doppelt.
+collect_opkg_feeds ()
+{
+  local TARGET="$1"
+
+  local SRC="$SANDBOX_DIR/gluon/openwrt/bin/packages"
+  # "ramips-mt7621" -> "ramips/mt7621", das ist Gluons bindir und zugleich %S
+  # in den opkg-URLs der site.conf.
+  local BINDIR="${TARGET/-//}"
+  local DEST="$SANDBOX_DIR/images/running/opkg/gluon-$SBRANCH/$BINDIR"
+
+  local arch_dir feed
+
+  if [ ! -d "$SRC" ]; then
+    echo "  bin/packages fehlt - keine opkg-Feeds einzusammeln."
+    return 0
+  fi
+
+  for arch_dir in "$SRC"/*/; do
+    [ -d "$arch_dir" ] || continue
+
+    for feed in "$arch_dir"*/; do
+      [ -d "$feed" ] || continue
+      # Ohne Index ist das Verzeichnis fuer opkg wertlos.
+      [ -f "$feed/Packages.gz" ] || continue
+
+      mkdir -p "$DEST"
+      cp -r "$feed" "$DEST/" \
+        || abort "opkg-Feed $feed liess sich nicht nach $DEST kopieren."
+    done
+  done
+
+  if [ -d "$DEST" ]; then
+    echo "  opkg-Feeds nach images/running/opkg/gluon-$SBRANCH/$BINDIR: $(ls "$DEST" | tr '\n' ' ')"
+  fi
 }
 
 # Runs once per domain, after all of its targets have been built: manifest,
