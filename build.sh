@@ -103,6 +103,62 @@ timestamp_lines ()
 }
 
 
+# Raeumt den PATH auf, bevor irgendetwas gebaut wird.
+#
+# Unter WSL reicht Windows seinen eigenen PATH durch. Ein Eintrag wie
+# "/mnt/c/Program Files/PuTTY/" ist fuer sich genommen gueltig, zerfaellt im
+# Build-System aber am Leerzeichen zu "/mnt/c/Program" und "Files/PuTTY/" -
+# und ein *relativer* Eintrag im PATH bringt "find -execdir" dazu, die Arbeit
+# grundsaetzlich zu verweigern:
+#
+#   find: The relative path 'Files/PuTTY/' is included in the PATH environment
+#         variable, which is insecure in combination with the -execdir action
+#
+# OpenWrt benutzt genau das in package/install, um die Zeitstempel des
+# root-Verzeichnisses zu normalisieren. Der Lauf stirbt damit erst nach der
+# halben Bauzeit eines Targets, mit einer Meldung, die nach allem aussieht,
+# nur nicht nach dem PATH. Deshalb hier, am Anfang, statt dort.
+#
+# Entfernt werden: relative Eintraege, leere Eintraege (die "." bedeuten) und
+# Eintraege mit Leerzeichen. Nichts davon gehoert in einen Build-PATH.
+sanitize_path ()
+{
+  local ENTRY
+  local -a KEPT=()
+  local -a DROPPED=()
+  local SAVED_IFS="$IFS"
+
+  IFS=':'
+  for ENTRY in $PATH; do
+    if [ -z "$ENTRY" ] || [[ $ENTRY != /* ]] || [[ $ENTRY == *" "* ]]; then
+      DROPPED+=( "${ENTRY:-<leer>}" )
+    else
+      KEPT+=( "$ENTRY" )
+    fi
+  done
+  IFS="$SAVED_IFS"
+
+  if (( ${#DROPPED[@]} == 0 )); then
+    return
+  fi
+
+  if (( ${#KEPT[@]} == 0 )); then
+    abort "Cleaning the PATH would leave it empty. Entries: $PATH"
+  fi
+
+  local OLD_PATH="$PATH"
+  printf -v PATH "%s:" "${KEPT[@]}"
+  PATH="${PATH%:}"
+  export PATH
+
+  echo "Removed ${#DROPPED[@]} unusable PATH entry/entries for this build:"
+  for ENTRY in "${DROPPED[@]}"; do
+    echo "  $ENTRY"
+  done
+  echo "  (relative, empty or containing a space - \"find -execdir\" refuses to run with those)"
+  unset OLD_PATH
+}
+
 detect_timestamp_awk ()
 {
   local CANDIDATE
@@ -1806,6 +1862,8 @@ load_domains_config "$DOMAINS_CONF_FILE"
 "$SANDBOX_DIR/tests/check-site-conf.sh" --optional
 
 detect_timestamp_awk
+
+sanitize_path
 
 determine_sbranch "$SITES_FILE"
 
