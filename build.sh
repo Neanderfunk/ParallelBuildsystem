@@ -1188,7 +1188,28 @@ collect_opkg_feeds ()
   # "ramips-mt7621" -> "ramips/mt7621", das ist Gluons bindir und zugleich %S
   # in den opkg-URLs der site.conf.
   local BINDIR="${TARGET/-//}"
-  local DEST="$SANDBOX_DIR/images/running/opkg/gluon-$SBRANCH/$BINDIR"
+
+  # Nach Gluon-Zweig getrennt: "v2025.1.x" -> "opkg-2025.1.x". Abgeschnitten
+  # wird allein das fuehrende "v", sonst steht dort woertlich, was in Feld 2 der
+  # sites-Datei steht - der Pfad laesst sich also dagegen grepen, und es gibt
+  # keine Umformung, die spaeter auseinanderlaufen koennte.
+  #
+  # Ein Lauf hat immer genau einen Gluon-Baum, deshalb genuegt der erste
+  # Eintrag - build.sh nimmt ihn an anderer Stelle schon fuer
+  # "git reset --hard origin/$GLUONBRANCH".
+  #
+  # Warum ueberhaupt getrennt: die Verzeichnisse tragen zwar den Release im
+  # Namen und kollidieren nicht, aber so laesst sich die Aufbewahrung je Zweig
+  # steuern. Ein Knoten, der noch auf dem alten Zweig steht, verliert sein
+  # Verzeichnis dann nicht, wenn beim anderen aufgeraeumt wird - und das gilt
+  # in beide Richtungen, ob nun vorab oder nachtraeglich ausgerollt wird.
+  local GLUON_BRANCH_LABEL="${ALL_SITE_GLUON_BRANCHES[0]-}"
+  GLUON_BRANCH_LABEL="${GLUON_BRANCH_LABEL#v}"
+  if [ -z "$GLUON_BRANCH_LABEL" ]; then
+    abort "collect_opkg_feeds: der Gluon-Zweig steht nicht fest, Feld 2 der sites-Datei ist leer."
+  fi
+
+  local DEST="$SANDBOX_DIR/images/running/opkg-$GLUON_BRANCH_LABEL/gluon-$SBRANCH/$BINDIR"
 
   local arch_dir feed
 
@@ -1212,7 +1233,7 @@ collect_opkg_feeds ()
   done
 
   if [ -d "$DEST" ]; then
-    echo "  opkg-Feeds nach images/running/opkg/gluon-$SBRANCH/$BINDIR: $(ls "$DEST" | tr '\n' ' ')"
+    echo "  opkg-Feeds nach images/running/opkg-$GLUON_BRANCH_LABEL/gluon-$SBRANCH/$BINDIR: $(ls "$DEST" | tr '\n' ' ')"
   fi
 }
 
