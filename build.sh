@@ -1153,12 +1153,38 @@ finalize_site ()
 
   write_build_info "$SITE_IMAGE_DIR" "$RELBRANCH" "$TEMPLATE_NAME" "$SITE_CODE"
 
-  # Das Buildlog ist mit V=s mehrere Dutzend MB gross und laesst sich um etwa
-  # Faktor 25 packen. gzip statt xz, weil zgrep, zcat und zless ueberall da
-  # sind - xz kaeme auf zwei Drittel der Groesse, aber mit xzgrep.
-  if [ -f "$SITE_IMAGE_DIR/build.log" ]; then
-    gzip --force --best -- "$SITE_IMAGE_DIR/build.log"
-  fi
+  # Das Buildlog bleibt hier ungepackt liegen. Gepackt wird erst am Ende des
+  # ganzen Laufs, in compress_build_logs(). Grund: solange finalize_site das Log
+  # selbst packte, durfte es nur aufgerufen werden, wenn zu dieser Domain
+  # garantiert nichts mehr geschrieben wird - unter BUILD_ORDER=target haengen
+  # spaetere Targets aber noch an dasselbe Log an, und das waere dann schon
+  # gepackt. Ohne diese Abhaengigkeit ist der Abschluss einer Domain unter jeder
+  # Reihenfolge gefahrlos vorziehbar.
+}
+
+
+# Packt die Buildlogs aller Domains, einmal am Ende des Laufs.
+#
+# Mit V=s sind das je Domain mehrere Dutzend MB, die sich um etwa Faktor 25
+# packen lassen. gzip statt xz, weil zgrep, zcat und zless ueberall da sind -
+# xz kaeme auf zwei Drittel der Groesse, aber mit xzgrep.
+compress_build_logs ()
+{
+  local -i site_index
+  local -i GEPACKT=0
+  local LOG
+
+  for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
+    LOG="$SANDBOX_DIR/images/running/${ALL_SITE_TEMPLATE_NAMES[$site_index]}/${ALL_SITE_CODES[$site_index]}/site/build.log"
+    # Bei einem fortgesetzten Lauf kann eine Domain ihr Log schon gepackt
+    # haben - dann liegt nur noch die .gz-Datei da und es gibt nichts zu tun.
+    if [ -f "$LOG" ]; then
+      gzip --force --best -- "$LOG"
+      GEPACKT=$(( GEPACKT + 1 ))
+    fi
+  done
+
+  echo "Compressed $GEPACKT build log(s)."
 }
 
 # Appends one record to the timing CSV. The file is meant for comparing build
@@ -1237,6 +1263,37 @@ open_build_times_file ()
 }
 
 # Builds one domain x one target and records how long it took.
+# Schliesst eine Domain ab: Manifest, Signatur, Site-Verzeichnis. Eine bereits
+# abgeschlossene Domain wird uebersprungen - das braucht sowohl der Resume als
+# auch der vorgezogene Abschluss unter BUILD_ORDER=domain, damit die Domain am
+# Ende nicht ein zweites Mal drankommt.
+run_finalize_step ()
+{
+  local -i site_index="$1"
+
+  if state_has finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"; then
+    echo "Skipping site code ${ALL_SITE_CODES[$site_index]}: already finalized."
+    return
+  fi
+
+  get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
+
+  local UPTIME
+  read_uptime_as_integer
+  local STEP_UPTIME_BEGIN="$UPTIME"
+
+  {
+    finalize_site "${ALL_SITE_RELBRANCHES[$site_index]}" \
+                  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" \
+                  "${ALL_SITE_CODES[$site_index]}"
+  } 2>&1 | timestamp_lines | tee --append -- "$LOG_FILENAME"
+
+  read_uptime_as_integer
+  log_build_time finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}" "-" "$(( UPTIME - STEP_UPTIME_BEGIN ))"
+
+  state_mark finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"
+}
+
 run_build_step ()
 {
   local -i site_index="$1"
@@ -1346,6 +1403,13 @@ build_all_images ()
         for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
           run_build_step "$site_index" "$target_index"
         done
+        # In dieser Reihenfolge ist die Domain hier fertig - alle ihre Targets
+        # sind gebaut. Also gleich abschliessen, statt bis zum Ende des ganzen
+        # Laufs zu warten: Manifest, Signatur und Site-Verzeichnis liegen dann
+        # schon vor, waehrend die naechsten Domains noch bauen. Unter
+        # BUILD_ORDER=target geht das nicht, dort ist eine Domain erst nach dem
+        # letzten Target vollstaendig.
+        run_finalize_step "$site_index"
       done
       ;;
 
@@ -1367,28 +1431,7 @@ build_all_images ()
   # Manifest, signature and site copy need all targets of a domain to be built,
   # which under BUILD_ORDER=target is only the case once everything is done.
   for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
-
-    if state_has finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"; then
-      echo "Skipping site code ${ALL_SITE_CODES[$site_index]}: already finalized in the interrupted run."
-      continue
-    fi
-
-    get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
-
-    local UPTIME
-    read_uptime_as_integer
-    local STEP_UPTIME_BEGIN="$UPTIME"
-
-    {
-      finalize_site "${ALL_SITE_RELBRANCHES[$site_index]}" \
-                    "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" \
-                    "${ALL_SITE_CODES[$site_index]}"
-    } 2>&1 | timestamp_lines | tee --append -- "$LOG_FILENAME"
-
-    read_uptime_as_integer
-    log_build_time finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}" "-" "$(( UPTIME - STEP_UPTIME_BEGIN ))"
-
-    state_mark finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"
+    run_finalize_step "$site_index"
   done
 
   read_uptime_as_integer
@@ -1399,6 +1442,9 @@ build_all_images ()
   echo "Total build time with BUILD_ORDER=$BUILD_ORDER: $ELAPSED_TIME_STR."
 
   popd >/dev/null
+
+  # Erst jetzt packen: ab hier schreibt niemand mehr in ein Buildlog.
+  compress_build_logs
 
   # Der Lauf ist durch, die Zustandsdatei hat ihren Zweck erfuellt. Sie wird
   # geloescht, bevor das Verzeichnis seinen endgueltigen Namen bekommt: ein
