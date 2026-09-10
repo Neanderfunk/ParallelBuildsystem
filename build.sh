@@ -629,6 +629,11 @@ preflight_check ()
     done
     grep -qw overlay /proc/filesystems \
       || FEHLT+=( "overlayfs im Kernel (fuer WORKERS=$WORKERS)" )
+    # Der Scheduler erfaehrt mit "wait -n -p", welcher Worker fertig ist. Das
+    # gibt es erst ab bash 5.1; aelter scheiterte er beim ersten fertigen Worker.
+    if (( BASH_VERSINFO[0] < 5 || ( BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1 ) )); then
+      FEHLT+=( "bash ab 5.1 fuer wait -n -p, vorhanden ist $BASH_VERSION (fuer WORKERS=$WORKERS)" )
+    fi
 
     if command -v unshare >/dev/null 2>&1 && grep -qw overlay /proc/filesystems; then
       local GRUND
@@ -1778,22 +1783,33 @@ resolve_targets ()
   fi
 }
 
-build_all_images ()
+# Uebernimmt im Worker den Zustand des Hauptlaufs. Ohne Pruefung und ohne
+# Meldung: beides hat der Hauptprozess schon getan (state_init oder
+# state_resume), und der Fingerabdruck muss hier nicht erneut verglichen
+# werden - der Worker wurde von genau diesem Lauf gestartet.
+#
+# SBRANCH darf der Worker keinesfalls selbst berechnen: bei SBRANCH_MODE=date
+# wechselt er stuendlich, ein Worker, der eine Stunde nach dem Hauptprozess
+# startet, stuende sonst mit anderem Releasestring im selben Manifest.
+state_attach ()
 {
-  local -a TARGETS=( "${BUILD_TARGETS[@]}" )
+  STATE_FILE="$SANDBOX_DIR/images/running/.build-state"
+  [ -f "$STATE_FILE" ] || abort "Worker: keine Zustandsdatei $STATE_FILE - er muss vom Hauptlauf gestartet werden."
 
-  # Opened before the fetch, so that a run that already fails there is recorded.
-  # RUN_UPTIME_BEGIN is deliberately global: the EXIT trap still needs it after
-  # this function has returned.
-  open_build_times_file "${#ALL_SITE_RELBRANCHES[@]}" "${#TARGETS[@]}"
-  echo "The build timings are appended to: $BUILD_TIMES_FILE (run id $BUILD_RUN_ID)"
+  SBRANCH="$(sed -n 's/^sbranch=//p' "$STATE_FILE")"
+  DATE_SUFFIX="$(sed -n 's/^date_suffix=//p' "$STATE_FILE")"
+  GLUON_SITE_VERSION="$(sed -n 's/^site_version=//p' "$STATE_FILE")"
 
-  pushd "$GLUON_DIR" >/dev/null
-  echo "Git fetching..."
-  git fetch --all
+  # Die Laufkennung kommt ueber die Umgebung, damit die Zeilen des Workers in
+  # BUILD_TIMES_FILE demselben Lauf zugeordnet werden wie die des Hauptprozesses.
+  : "${BUILD_RUN_ID:?Worker ohne BUILD_RUN_ID - er muss vom Hauptlauf gestartet werden.}"
+}
 
-  # Prepare the Gluon tree once, before the first domain. All domains are then
-  # built against this state, without resetting or patching again.
+# Bereitet den Gluon-Baum vor und schreibt dabei prepare.log. Aus
+# build_all_images herausgezogen, weil der Parallelbetrieb es nur fuer den
+# Aufbau des golden tree braucht, und dann mit erzwungenem Reset und Clean.
+run_prepare ()
+{
   local PREPARE_LOG_FILENAME="$SANDBOX_DIR/assembled/prepare.log"
   echo "Preparing the Gluon tree. The log file is: $PREPARE_LOG_FILENAME"
 
@@ -1810,9 +1826,190 @@ build_all_images ()
 
   read_uptime_as_integer
   log_build_time prepare "-" "-" "-" "$(( UPTIME - PREPARE_UPTIME_BEGIN ))"
+}
 
+# Laeuft IM Worker: baut genau ein Target ueber alle Domains. Was schon
+# erledigt ist - im golden-Aufbau die erste Domain, beim --resume alles
+# Fertige -, ueberspringt run_build_step selbst anhand der Zustandsdatei.
+worker_run ()
+{
+  local WORKER_TARGET="$1"
+  # run_build_step liest das Target ueber TARGETS[target_index]; im Worker
+  # gibt es genau eins.
+  local -a TARGETS=( "$WORKER_TARGET" )
+  local -i site_index
+
+  # Erst jetzt in den Baum wechseln, nicht schon beim Start: der Mount liegt
+  # inzwischen darueber, und ein vorher betretenes Verzeichnis zeigte noch auf
+  # den golden tree darunter.
+  cd -- "$GLUON_DIR"
+
+  for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
+    run_build_step "$site_index" 0
+  done
+}
+
+# Startet einen Worker fuer ein Target, im Hintergrund, in einem frischen
+# Overlay. Die Ausgabe geht nach $OVL_DIR/<target>.log - neben dem
+# Overlay-Verzeichnis, nicht darin, damit sie das Verwerfen ueberlebt und bei
+# einem Fehler noch nachzulesen ist. Die eigentlichen Buildlogs schreibt der
+# Worker ohnehin je Domain nach build-<target>.log.
+start_worker ()
+{
+  local TARGET="$1"
+  local W="$OVL_DIR/$TARGET"
+
+  ovl_discard_dir "$W"
+  mkdir -p -- "$W/lower" "$W/upper" "$W/work"
+
+  echo "Worker startet: $TARGET  (Ausgabe: $W.log)"
+
+  # Aus SANDBOX_DIR heraus, nicht aus dem Gluon-Baum, in dem der Hauptprozess
+  # gerade steht: dessen Pfad wird gleich ueberlagert, ein cwd dort saehe den
+  # alten Baum statt des Overlays. build.sh verlangt ohnehin sein eigenes
+  # Verzeichnis als cwd.
+  #
+  # Die Targetliste wird vollstaendig durchgereicht, damit BUILD_TARGETS im
+  # Worker dieselbe ist - sie geht in merge_target_logs und in die
+  # Fingerabdruecke ein.
+  (
+    cd -- "$SANDBOX_DIR"
+    export BUILD_RUN_ID
+    exec unshare -Urm "$SANDBOX_DIR/scripts/ovl-enter.sh" \
+      "$GLUON_DIR" "$W" "$GLUON_DIR" "$(id -u)" "$(id -g)" \
+      "$BUILD_SH" "--worker=$TARGET" \
+      "$BUILD_CONF_FILE" "$TARGETS_CONF_FILE" "$DOMAINS_CONF_FILE" "${BUILD_TARGETS[@]}"
+  ) > "$W.log" 2>&1 &
+}
+
+# Der Scheduler: haelt bis zu WORKERS Worker gleichzeitig am Laufen, einen je
+# Target, und startet fuer jedes fertige Target das naechste.
+#
+# Ein Worker je Target statt eines langlebigen Workers, der mehrere Targets
+# aus einer Warteschlange nimmt: ein Worker kann sein upperdir nicht verwerfen,
+# solange er darin laeuft - es wuechse ueber alle seine Targets. So bleibt
+# jedes Delta bei einem Target (gemessen ~2,8 GB plus ~0,2 GB je Domain).
+#
+# Versetzter Start nur beim Hochfahren: die Last eines Builds ist bimodal,
+# gleichzeitig gestartete Worker liefen anfangs synchron durch dieselben
+# Phasen und ihre Vollastspitzen kollidierten. Danach driften sie ohnehin
+# auseinander, ein Nachruecker startet sofort.
+#
+# Scheitert ein Worker, werden keine neuen mehr gestartet, die laufenden aber
+# zu Ende gebracht: ihre Targets sind dann per state_mark gesichert, und ein
+# --resume baut nur noch das Gescheiterte. Sofort alle abzubrechen verwarf
+# die Arbeit aller anderen.
+run_parallel ()
+{
+  local -a WARTESCHLANGE=( "${BUILD_TARGETS[@]}" )
+  local -A LAUFEND=()
+  local -a GESCHEITERT=()
+  local -i GESTARTET=0
+  local PID TARGET RC
+
+  echo "Parallelbetrieb: ${#WARTESCHLANGE[@]} Targets, bis zu $WORKERS Worker, ${WORKER_START_DELAY}s Versatz beim Hochfahren."
+
+  while (( ${#WARTESCHLANGE[@]} > 0 || ${#LAUFEND[@]} > 0 )); do
+
+    while (( ${#GESCHEITERT[@]} == 0 && ${#WARTESCHLANGE[@]} > 0 && ${#LAUFEND[@]} < WORKERS )); do
+      if (( GESTARTET > 0 && GESTARTET < WORKERS )); then
+        sleep "$WORKER_START_DELAY"
+      fi
+      TARGET="${WARTESCHLANGE[0]}"
+      WARTESCHLANGE=( "${WARTESCHLANGE[@]:1}" )
+      start_worker "$TARGET"
+      LAUFEND[$!]="$TARGET"
+      GESTARTET+=1
+    done
+
+    (( ${#LAUFEND[@]} > 0 )) || break
+
+    # Mit den PIDs, nicht ohne: sonst wartete wait -n auch auf andere
+    # Hintergrundprozesse dieses Laufs. Mit errexit fuehrte ein Exitcode
+    # ungleich null sofort zum Abbruch - daher das "|| RC=$?".
+    RC=0
+    wait -n -p PID "${!LAUFEND[@]}" || RC=$?
+    TARGET="${LAUFEND[$PID]}"
+    unset "LAUFEND[$PID]"
+
+    if (( RC == 0 )); then
+      echo "Worker fertig: $TARGET"
+      ovl_discard_dir "$OVL_DIR/$TARGET"
+    else
+      echo "Worker GESCHEITERT: $TARGET (Exitcode $RC) - siehe $OVL_DIR/$TARGET.log. Es werden keine weiteren gestartet, die laufenden ($((${#LAUFEND[@]}))) noch zu Ende gebracht." >&2
+      GESCHEITERT+=( "$TARGET" )
+      # Overlay bewusst stehen lassen: sein upperdir zeigt, wie weit der
+      # Worker kam.
+    fi
+  done
+
+  if (( ${#GESCHEITERT[@]} > 0 )); then
+    abort "${#GESCHEITERT[@]} Target(s) gescheitert: ${GESCHEITERT[*]}. Die uebrigen sind gebaut und gesichert; mit --resume wird nur noch das Gescheiterte gebaut."
+  fi
+}
+
+# Parallelbetrieb: golden tree sicherstellen, dann alle Targets parallel.
+build_parallel ()
+{
+  local GFP
+  GFP="$(golden_fingerprint "${ALL_SITE_GLUON_BRANCHES[0]}")"
+
+  if [ -f "$GOLDEN_FP_FILE" ] && [ "$(cat -- "$GOLDEN_FP_FILE")" = "$GFP" ]; then
+    echo "Golden tree ist aktuell (Fingerabdruck ${GFP:0:16}) - prepare entfaellt, der Baum bleibt unberuehrt."
+  else
+    echo "Golden tree fehlt oder ist veraltet - er wird neu gebaut: prepare mit Reset und Clean, dann die erste Domain seriell ueber alle Targets."
+
+    # Vorher weg, damit ein abgebrochener Aufbau nicht als gueltig gilt.
+    rm -f -- "$GOLDEN_FP_FILE"
+
+    # Fuer diesen Aufbau erzwungen, gleich wie konfiguriert: der golden tree
+    # ist nur dann ein definierter Stand, wenn er von Grund auf entsteht.
+    local GITRESET=true
+    local MAKECLEAN=true
+    run_prepare
+
+    # Direkt im Baum, ohne Overlay - genau das soll ja im golden tree bleiben.
+    local -a TARGETS=( "${BUILD_TARGETS[@]}" )
+    local -i target_index
+    for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
+      run_build_step 0 "$target_index"
+    done
+
+    mkdir -p -- "$OVL_DIR"
+    echo "$GFP" > "$GOLDEN_FP_FILE"
+    echo "Golden tree steht (Fingerabdruck ${GFP:0:16})."
+  fi
+
+  run_parallel
+}
+
+build_all_images ()
+{
+  local -a TARGETS=( "${BUILD_TARGETS[@]}" )
+
+  # Opened before the fetch, so that a run that already fails there is recorded.
+  # RUN_UPTIME_BEGIN is deliberately global: the EXIT trap still needs it after
+  # this function has returned.
+  open_build_times_file "${#ALL_SITE_RELBRANCHES[@]}" "${#TARGETS[@]}"
+  echo "The build timings are appended to: $BUILD_TIMES_FILE (run id $BUILD_RUN_ID)"
+
+  pushd "$GLUON_DIR" >/dev/null
+  echo "Git fetching..."
+  git fetch --all
+
+  local UPTIME
   local -i site_index
   local -i target_index
+
+  if (( WORKERS > 1 )); then
+    # Golden tree sicherstellen, dann alle Targets parallel. prepare laeuft
+    # dort nur, wenn der golden tree neu gebaut werden muss.
+    build_parallel
+  else
+
+  # Prepare the Gluon tree once, before the first domain. All domains are then
+  # built against this state, without resetting or patching again.
+  run_prepare
 
   # The unit of work is one domain x one target. BUILD_ORDER only decides in
   # which order those units are visited, so that both orders can be compared
@@ -1849,6 +2046,8 @@ build_all_images ()
       ;;
 
   esac
+
+  fi
 
   # Manifest, signature and site copy need all targets of a domain to be built,
   # which under BUILD_ORDER=target is only the case once everything is done.
@@ -2132,13 +2331,17 @@ prepare_run_state ()
 # den drei Konfigurationsdateien stehen darf.
 RESUME=false
 RESTART=false
+# Intern: build.sh startet sich im Parallelbetrieb selbst als Worker fuer ein
+# Target, siehe start_worker. Nicht fuer den Aufruf von Hand gedacht.
+WORKER_TARGET=""
 
 declare -a POSITIONAL_ARGS=()
 for ARG in "$@"; do
   case "$ARG" in
-    --resume)  RESUME=true ;;
-    --restart) RESTART=true ;;
-    *)         POSITIONAL_ARGS+=( "$ARG" ) ;;
+    --resume)   RESUME=true ;;
+    --restart)  RESTART=true ;;
+    --worker=*) WORKER_TARGET="${ARG#--worker=}" ;;
+    *)          POSITIONAL_ARGS+=( "$ARG" ) ;;
   esac
 done
 set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
@@ -2170,6 +2373,11 @@ if (( $# < 3 )); then
 fi
 
 SANDBOX_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Die Datei, die gerade laeuft. Ein Worker muss genau diese starten und nicht
+# stur "build.sh": laeuft eine Kopie oder eine umbenannte Fassung, bekaeme er
+# sonst eine andere Version - im schlimmsten Fall eine ohne --worker.
+BUILD_SH="$SANDBOX_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 
 # Bauzeit je Domain, eine Zeile "<template>/<site_code><TAB><sekunden>" je
 # erledigtem Bauschritt. Schluessel mit Template, weil key- und nokeys-Variante
@@ -2219,13 +2427,34 @@ load_build_config   "$BUILD_CONF_FILE"
 load_targets_config "$TARGETS_CONF_FILE"
 load_domains_config "$DOMAINS_CONF_FILE"
 
+# Im Parallelbetrieb baut jeder Worker ein Target ueber alle Domains - die
+# Reihenfolge ist also immer targetweise, BUILD_ORDER aus der Konfiguration
+# gilt dort nicht. Fuer Hauptprozess UND Worker gesetzt, damit ihre Zeilen in
+# BUILD_TIMES_FILE einheitlich als "parallel" erscheinen; sonst stuenden die
+# Worker, die build.conf selbst lesen, unter "domain".
+if (( WORKERS > 1 )); then
+  BUILD_ORDER="parallel"
+fi
+
+# Worker: nur das Noetigste und dann das eine Target bauen. Alles, was einmal
+# je Lauf geschieht - Vorabpruefung, Site-Pruefung, SBRANCH berechnen,
+# assembled/ erzeugen, Zustand anlegen -, hat der Hauptprozess schon getan.
+# Insbesondere darf der Worker assembled/ nicht neu erzeugen: das raeumt mit
+# rm -rf auf, waehrend andere Worker daraus lesen.
+if [ -n "$WORKER_TARGET" ]; then
+  state_attach
+  detect_timestamp_awk
+  sanitize_path
+  parse_sites_file "$SITES_FILE"
+  resolve_targets "$@"
+  GLUON_DIR="$SANDBOX_DIR/gluon"
+  worker_run "$WORKER_TARGET"
+  exit 0
+fi
+
 # Nach den Konfigurationsdateien, weil die Pruefung von deren Werten abhaengt
 # (SIGNKEY_FILE), und vor allem anderen, damit ein Mangel nichts mehr kostet.
 preflight_check
-
-if (( WORKERS > 1 )); then
-  abort "WORKERS=$WORKERS: die Voraussetzungen fuer den Parallelbetrieb sind erfuellt, der Parallelbetrieb selbst ist aber noch nicht fertig. Bis dahin bitte WORKERS=1."
-fi
 
 # Syntaxcheck der Lua-Dateien in den Templates, dauert zwei Sekunden. Ein
 # Tippfehler in der site.conf faellt damit hier auf und nicht erst nach
