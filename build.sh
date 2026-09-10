@@ -372,12 +372,66 @@ write_build_info ()
   echo "Provenance written to \"$INFO\"."
 }
 
+# Mit Target: das Log genau eines Bauschritts, build-<target>.log. Ohne: das
+# eine build.log der Domain, in das finalize schreibt und das veroeffentlicht
+# wird.
+#
+# Warum je Target getrennt: im Parallelbetrieb bauen mehrere Worker
+# verschiedene Targets derselben Domain gleichzeitig. In ein gemeinsames Log
+# geschrieben, ergaebe das zwar keine zerrissenen Zeilen (tee --append, kurze
+# Zeilen sind atomar), aber ein Durcheinander aus zwei Builds Zeile um Zeile.
+# merge_target_logs fuegt die Teile vor finalize in Target-Reihenfolge zusammen,
+# das veroeffentlichte build.log sieht also aus wie immer.
 get_site_log_filename ()
 {
   local TEMPLATE_NAME="$1"
   local SITE_CODE="$2"
+  local TARGET="${3:-}"
 
-  LOG_FILENAME="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/build.log"
+  if [ -n "$TARGET" ]; then
+    LOG_FILENAME="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/build-$TARGET.log"
+  else
+    LOG_FILENAME="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/build.log"
+  fi
+}
+
+# Fuegt die Logs der einzelnen Bauschritte einer Domain zu build.log zusammen,
+# in der Reihenfolge der Targetliste - also so, wie es unter BUILD_ORDER=domain
+# schon immer aussah.
+#
+# Ueber eine temporaere Datei und mv, und die Einzelteile erst danach weg:
+# bricht der Lauf in finalize ab und wird fortgesetzt, sind die Teile schon
+# zusammengefuegt und weg, und ein zweites Zusammenfuegen wuerde das fertige
+# build.log sonst mit einer leeren Datei ueberschreiben. Deshalb auch der
+# fruehe Ausstieg, wenn es nichts zusammenzufuegen gibt.
+#
+# Bekannter Makel, nicht von hier: generate_all_site_configs raeumt assembled/
+# mit rm -rf, und das laeuft auch beim --resume. Die Logs der Targets, die ein
+# abgebrochener Lauf schon gebaut hatte, sind danach weg - das war mit dem einen
+# build.log vorher genauso.
+merge_target_logs ()
+{
+  local TEMPLATE_NAME="$1"
+  local SITE_CODE="$2"
+  local DIR="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
+  local TARGET
+  local -i TEILE=0
+
+  for TARGET in "${BUILD_TARGETS[@]}"; do
+    [ -f "$DIR/build-$TARGET.log" ] && TEILE+=1
+  done
+  (( TEILE > 0 )) || return 0
+
+  for TARGET in "${BUILD_TARGETS[@]}"; do
+    if [ -f "$DIR/build-$TARGET.log" ]; then
+      cat -- "$DIR/build-$TARGET.log"
+    fi
+  done > "$DIR/build.log.tmp"
+  mv -- "$DIR/build.log.tmp" "$DIR/build.log"
+
+  for TARGET in "${BUILD_TARGETS[@]}"; do
+    rm -f -- "$DIR/build-$TARGET.log"
+  done
 }
 # Default values for every setting that build.conf may override. They are
 # defined here so that build.sh still runs if no configuration file exists.
@@ -1491,6 +1545,7 @@ run_finalize_step ()
     return
   fi
 
+  merge_target_logs      "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
   get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
 
   local UPTIME
@@ -1523,7 +1578,7 @@ run_build_step ()
     return
   fi
 
-  get_site_log_filename  "$TEMPLATE_NAME"  "$SITE_CODE"
+  get_site_log_filename  "$TEMPLATE_NAME"  "$SITE_CODE"  "$TARGET"
 
   local UPTIME
   read_uptime_as_integer
