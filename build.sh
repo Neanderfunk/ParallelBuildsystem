@@ -807,8 +807,15 @@ build_make_args ()
 
   append_quoted_arg  ARGS  GLUON_SITEDIR    "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
   append_quoted_arg  ARGS  GLUON_IMAGEDIR   "$SANDBOX_DIR/images/running/$TEMPLATE_NAME/$SITE_CODE"
-  append_quoted_arg  ARGS  GLUON_MODULEDIR  "$SANDBOX_DIR/gluon/output/modules"
-  append_quoted_arg  ARGS  GLUON_PACKAGEDIR "$SANDBOX_DIR/gluon/output/packages"
+  # Die Paketausgabe liegt im Laufverzeichnis, nicht im Gluon-Baum: sie wandert
+  # beim abschliessenden Umbenennen mit nach images-<ts>/packages - genau
+  # dorthin, wo sie frueher erst per mv am Ende hinkam. Vor allem aber liegt sie
+  # damit ausserhalb eines Overlays, das ein Worker am Ende verwirft.
+  #
+  # GLUON_MODULEDIR stand hier ebenfalls, wird aber von Gluon 2023.2 nicht mehr
+  # gelesen (kein Treffer im Makefile oder in scripts/) - ein Ueberbleibsel
+  # aelterer Versionen, darum entfernt.
+  append_quoted_arg  ARGS  GLUON_PACKAGEDIR "$SANDBOX_DIR/images/running/packages"
   append_quoted_arg  ARGS  GLUON_SITE_VERSION "$GLUON_SITE_VERSION"
   # For the Gluon build system, BROKEN=1 means "use the experimental/unstable branch".
   append_quoted_arg  ARGS  BROKEN "$BROKEN"
@@ -1677,36 +1684,13 @@ build_all_images ()
   # rename output to images with timestamp
   mv "./images/running" "./images/images-$DATE_SUFFIX"
 
-  # I do not think that we build any modules yet.
-  # echo check for modules
-  # if [ -d "./gluon/output/modules" ]; then
-  #   ARE_THERE_MODULES=true
-  # else
-  #   ARE_THERE_MODULES=false
-  # fi
-  # if $ARE_THERE_MODULES; then
-  #   echo moving modules-dir $SANDBOX_DIR/gluon/output/modules
-  #   mv "$SANDBOX_DIR/gluon/output/modules" "$SANDBOX_DIR/images-$DATE_SUFFIX/."
-  # fi
-
-  echo check for packages wich are actual modules
-  if [ -d "./gluon/output/packages" ]; then
-    ARE_THERE_PACKAGES=true
-  else
-    ARE_THERE_PACKAGES=false
-  fi
-  if $ARE_THERE_PACKAGES; then
-    echo moving packages-dir $SANDBOX_DIR/gluon/output/packages
-    mv "$SANDBOX_DIR/gluon/output/packages" "$SANDBOX_DIR/images/images-$DATE_SUFFIX/."
-  fi
-
   echo "Finished building images:"
   echo "- Images  dir: images-$DATE_SUFFIX"
-  # if $ARE_THERE_MODULES; then
-  #   echo "- Modules dir: modules-$DATE_SUFFIX/modules"
-  # fi
-  if $ARE_THERE_PACKAGES; then
-    echo "- Packages dir: modules-$DATE_SUFFIX/packages"
+  # Die Pakete sind mit dem Umbenennen oben schon mitgewandert, siehe
+  # GLUON_PACKAGEDIR in build_make_args. (Die Meldung nannte hier frueher
+  # "modules-<ts>/packages", obwohl das Verzeichnis images-<ts> heisst.)
+  if [ -d "./images/images-$DATE_SUFFIX/packages" ]; then
+    echo "- Packages dir: images-$DATE_SUFFIX/packages"
   fi
 }
 
