@@ -461,6 +461,8 @@ set_config_defaults ()
   # Parallelbetrieb, siehe build.conf. 1 = seriell wie bisher, ohne Overlay.
   WORKERS=1
   WORKER_START_DELAY=60
+  WORKERS_AUTO_START=3
+  METRICS=true
 
   # Quellen vorab holen, mit Wiederholung. 0 Versuche schaltet den Schritt ab.
   DOWNLOAD_ATTEMPTS=5
@@ -618,6 +620,11 @@ preflight_check ()
       || FEHLT+=( "/usr/bin/ecdsasign (esign ruft es mit festem Pfad auf; Paket ecdsautils)" )
     [ -r "$SANDBOX_DIR/buildkeys/$SIGNKEY_FILE" ] \
       || FEHLT+=( "Signaturschluessel buildkeys/$SIGNKEY_FILE (SIGNKEY_FILE)" )
+  fi
+
+  # Der Collector ist ein Python-Skript.
+  if [ "$METRICS" = true ]; then
+    command -v python3 >/dev/null 2>&1 || FEHLT+=( "python3 (fuer METRICS=true; abschaltbar mit METRICS=false)" )
   fi
 
   # Parallelbetrieb. Erst die Werkzeuge, dann - nur wenn die da sind - der
@@ -1648,6 +1655,12 @@ finish_build_times_file ()
     return
   fi
 
+  # Am normalen Ende ist der Collector schon gestoppt und seine Empfehlung
+  # uebernommen, dann tut das hier nichts. Bei einem Abbruch wertet er noch aus,
+  # seine Empfehlung bleibt aber nur in der Datei dieses Laufs - ein
+  # abgebrochener Lauf setzt die gueltige Empfehlung nicht.
+  collector_stop
+
   local UPTIME
   read_uptime_as_integer
 
@@ -1820,6 +1833,61 @@ status_set ()
 status_clear ()
 {
   rm -f -- "$STATUS_DIR/${WORKER_TARGET:-main}"
+}
+
+# Loest WORKERS=auto auf: die Empfehlung des letzten erfolgreichen Laufs,
+# sonst WORKERS_AUTO_START. Danach ist WORKERS in jedem Fall eine Zahl.
+resolve_workers ()
+{
+  if [ "$WORKERS" = auto ]; then
+    local EMP="$METRICS_DIR/empfehlung.txt"
+    if [ -f "$EMP" ]; then
+      WORKERS="$(sed -n 's/^empfohlen=//p' "$EMP")"
+      echo "WORKERS=auto: $WORKERS laut letztem Lauf - $(sed -n 's/^begruendung=//p' "$EMP")"
+    else
+      WORKERS="$WORKERS_AUTO_START"
+      echo "WORKERS=auto: noch keine Empfehlung, Startwert $WORKERS (WORKERS_AUTO_START)."
+    fi
+  fi
+  if ! [[ "$WORKERS" =~ ^[0-9]+$ ]] || (( WORKERS < 1 )); then
+    abort "WORKERS muss eine Zahl ab 1 oder \"auto\" sein, ist \"$WORKERS\"."
+  fi
+}
+
+# Startet den Collector im Hintergrund, siehe scripts/buildcollect.py.
+collector_start ()
+{
+  [ "$METRICS" = true ] || return 0
+  mkdir -p -- "$METRICS_DIR"
+  python3 "$SANDBOX_DIR/scripts/buildcollect.py" \
+    "$STATUS_DIR" "$METRICS_DIR/$BUILD_RUN_ID.csv" "$METRICS_DIR/$BUILD_RUN_ID.empfehlung.txt" \
+    "$SANDBOX_DIR" "$WORKERS" "$BUILD_RUN_ID" \
+    > "$METRICS_DIR/$BUILD_RUN_ID.log" 2>&1 &
+  COLLECTOR_PID=$!
+  echo "Metriken: $METRICS_DIR/$BUILD_RUN_ID.csv"
+}
+
+# Beendet den Collector; er wertet dabei aus. Mit "uebernehmen" wird seine
+# Empfehlung zur gueltigen fuer den naechsten Lauf, sonst bleibt sie nur in der
+# Datei dieses Laufs.
+#
+# Nur ein ERFOLGREICHER Lauf darf die Empfehlung setzen. Stirbt ein Lauf etwa
+# an Speichermangel, weil zu viele Worker liefen, stammen die Daten davor aus
+# der Phase, in der alles noch lief - und die Empfehlung koennte ausgerechnet
+# "mehr Worker" lauten.
+#
+# Idempotent: am normalen Ende und noch einmal im EXIT-Trap gerufen.
+collector_stop ()
+{
+  local UEBERNEHMEN="${1:-}"
+  [ -n "$COLLECTOR_PID" ] || return 0
+  kill -TERM "$COLLECTOR_PID" 2>/dev/null || true
+  wait "$COLLECTOR_PID" 2>/dev/null || true
+  COLLECTOR_PID=""
+  cat -- "$METRICS_DIR/$BUILD_RUN_ID.log" 2>/dev/null || true
+  if [ "$UEBERNEHMEN" = uebernehmen ] && [ -f "$METRICS_DIR/$BUILD_RUN_ID.empfehlung.txt" ]; then
+    cp -f -- "$METRICS_DIR/$BUILD_RUN_ID.empfehlung.txt" "$METRICS_DIR/empfehlung.txt"
+  fi
 }
 
 # Uebernimmt im Worker den Zustand des Hauptlaufs. Ohne Pruefung und ohne
@@ -2038,6 +2106,9 @@ build_all_images ()
   open_build_times_file "${#ALL_SITE_RELBRANCHES[@]}" "${#TARGETS[@]}"
   echo "The build timings are appended to: $BUILD_TIMES_FILE (run id $BUILD_RUN_ID)"
 
+  # Nach open_build_times_file, das BUILD_RUN_ID setzt, und vor allem Bauen.
+  collector_start
+
   pushd "$GLUON_DIR" >/dev/null
   echo "Git fetching..."
   git fetch --all
@@ -2064,6 +2135,10 @@ build_all_images ()
     domain)
       echo "Build order: all targets of a domain, then the next domain."
       for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
+        # Nach einem make clean kompiliert die erste Domain alles neu - fuer den
+        # Collector ist das "golden", nicht "build", sonst vermengte sich die
+        # hochparallele Kompilierung mit den seriellen Imagebauten danach.
+        if (( site_index == 0 )) && [ "$MAKECLEAN" = true ]; then BUILD_PHASE=golden; else BUILD_PHASE=build; fi
         for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
           run_build_step "$site_index" "$target_index"
         done
@@ -2081,6 +2156,8 @@ build_all_images ()
       echo "Build order: all domains of a target, then the next target."
       for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
         for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
+          # Hier kompiliert je Target die erste Domain, siehe oben.
+          if (( site_index == 0 )) && [ "$MAKECLEAN" = true ]; then BUILD_PHASE=golden; else BUILD_PHASE=build; fi
           run_build_step "$site_index" "$target_index"
         done
       done
@@ -2108,6 +2185,10 @@ build_all_images ()
   echo "Total build time with BUILD_ORDER=$BUILD_ORDER: $ELAPSED_TIME_STR."
 
   popd >/dev/null
+
+  # Gebaut und abgeschlossen, der Lauf ist erfolgreich - seine Empfehlung gilt.
+  status_clear
+  collector_stop uebernehmen
 
   # Erst jetzt packen: ab hier schreibt niemand mehr in ein Buildlog.
   compress_build_logs
@@ -2456,6 +2537,12 @@ STATUS_DIR="$SANDBOX_DIR/images/running/.status"
 # wird und nur build_parallel den Unterschied kennt.
 BUILD_PHASE="build"
 
+# Metriken der Laeufe, samt der Empfehlung fuer den naechsten. Ausserhalb von
+# images/, damit sie Laeufe ueberdauern: der naechste Lauf soll die Empfehlung
+# des letzten lesen koennen.
+METRICS_DIR="$SANDBOX_DIR/metrics"
+COLLECTOR_PID=""
+
 # Fuer build-info.txt: Startzeitpunkt und Aufruf festhalten, bevor die
 # Argumente durch "shift" verlorengehen.
 BUILD_START_EPOCH="$(date +%s)"
@@ -2481,6 +2568,8 @@ shift 3
 load_build_config   "$BUILD_CONF_FILE"
 load_targets_config "$TARGETS_CONF_FILE"
 load_domains_config "$DOMAINS_CONF_FILE"
+
+resolve_workers
 
 # Im Parallelbetrieb baut jeder Worker ein Target ueber alle Domains - die
 # Reihenfolge ist also immer targetweise, BUILD_ORDER aus der Konfiguration
