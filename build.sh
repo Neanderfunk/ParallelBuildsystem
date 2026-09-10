@@ -413,6 +413,51 @@ set_config_defaults ()
   SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
 }
 
+# Prueft vorab alles, was der Lauf an Werkzeugen und Dateien braucht, und
+# meldet ALLE Maengel auf einmal.
+#
+# Ohne das scheitert ein fehlendes Werkzeug erst dort, wo es gebraucht wird.
+# Das Tueckische daran ist die Reihenfolge: die Werkzeuge des Anfangs (git,
+# make, patch) fallen sofort auf, aber gerade die des Endes nicht. esign ruft
+# /usr/bin/ecdsasign mit festem Pfad auf, und zwar in finalize_site - also nach
+# dem letzten Target einer Domain, im Volllauf Stunden nach dem Start. gzip
+# braucht compress_build_logs, das als allerletzter Schritt laeuft.
+#
+# Gesammelt statt beim ersten Treffer abgebrochen: wer drei Werkzeuge
+# nachinstallieren muss, soll das nicht in drei Anlaeufen erfahren.
+#
+# Was OpenWrt selbst fuer den Bau braucht, prueft OpenWrt in prereq-build.mk
+# ohnehin, und zwar gleich beim ersten make - das wird hier nicht dupliziert.
+preflight_check ()
+{
+  local -a FEHLT=()
+  local WERKZEUG
+
+  # Was build.sh und seine Helfer (esign, prepare.sh, lib-patch.sh) direkt
+  # aufrufen.
+  for WERKZEUG in git make patch sed grep awk find xargs cp rsync sort tee \
+                  date stat mktemp gzip sha256sum getconf sync; do
+    command -v "$WERKZEUG" >/dev/null 2>&1 || FEHLT+=( "$WERKZEUG" )
+  done
+
+  # Signieren. Faellt sonst erst beim Manifest der ersten Domain auf.
+  if [ -n "$SIGNKEY_FILE" ]; then
+    [ -x /usr/bin/ecdsasign ] \
+      || FEHLT+=( "/usr/bin/ecdsasign (esign ruft es mit festem Pfad auf; Paket ecdsautils)" )
+    [ -r "$SANDBOX_DIR/buildkeys/$SIGNKEY_FILE" ] \
+      || FEHLT+=( "Signaturschluessel buildkeys/$SIGNKEY_FILE (SIGNKEY_FILE)" )
+  fi
+
+  if (( ${#FEHLT[@]} > 0 )); then
+    echo >&2
+    echo "Vorabpruefung: ${#FEHLT[@]} Voraussetzung(en) fehlen:" >&2
+    printf '  - %s\n' "${FEHLT[@]}" >&2
+    abort "Bitte zuerst nachruesten. Der Lauf wuerde sonst erst dort scheitern, wo das Fehlende gebraucht wird - bei ecdsasign etwa nach dem letzten Target der ersten Domain."
+  fi
+
+  echo "Vorabpruefung bestanden."
+}
+
 # Prints the given path as an absolute one, without requiring the file to exist
 # yet. A relative path is resolved against the current working directory, which
 # is still the one the user called build.sh from.
@@ -1975,6 +2020,10 @@ shift 3
 load_build_config   "$BUILD_CONF_FILE"
 load_targets_config "$TARGETS_CONF_FILE"
 load_domains_config "$DOMAINS_CONF_FILE"
+
+# Nach den Konfigurationsdateien, weil die Pruefung von deren Werten abhaengt
+# (SIGNKEY_FILE), und vor allem anderen, damit ein Mangel nichts mehr kostet.
+preflight_check
 
 # Syntaxcheck der Lua-Dateien in den Templates, dauert zwei Sekunden. Ein
 # Tippfehler in der site.conf faellt damit hier auf und nicht erst nach
