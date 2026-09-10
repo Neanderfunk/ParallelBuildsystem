@@ -490,6 +490,15 @@ set_config_defaults ()
   WORKERS_AUTO_START=3
   METRICS=true
 
+  # Platzschaetzung vor dem Lauf, siehe space_check und build.conf.
+  SPACE_CHECK=true
+  SPACE_UNIT_MB=300
+  SPACE_TARGET_MB=50
+  SPACE_WORKER_BASE_MB=3000
+  SPACE_WORKER_DOMAIN_MB=200
+  SPACE_RESERVE_MB=20480
+  DISK_FULL_MB=1024
+
   # Quellen vorab holen, mit Wiederholung. 0 Versuche schaltet den Schritt ab.
   DOWNLOAD_ATTEMPTS=5
   DOWNLOAD_RETRY_DELAY=30
@@ -1951,6 +1960,78 @@ collector_stop ()
   fi
 }
 
+# Schaetzt vor dem Lauf, ob der Platz reicht, und faellt bei Mangel auf
+# weniger Worker oder den seriellen Betrieb zurueck, statt nachts mitten im
+# Lauf an einer vollen Platte zu scheitern.
+#
+# Die Schaetzung, Werte aus build.conf, gemessen am 09./10.09.2026:
+#
+#   je Domain x Target  SPACE_UNIT_MB   Images (~185 MB im Mittel ueber 22
+#                                       Targets), das Paketverzeichnis (je
+#                                       site_code, ~35 MB) und das Buildlog,
+#                                       das bis zum Laufende zweimal ungepackt
+#                                       liegt (~45 MB bei V=s)
+#   je Target, einmal   SPACE_TARGET_MB die eingesammelten opkg-Feeds
+#   je Worker           SPACE_WORKER_BASE_MB + SPACE_WORKER_DOMAIN_MB je
+#                                       Domain: das upperdir eines Workers
+#                                       (2,8 GB fuer die erste Domain, 0,2 GB
+#                                       je weitere)
+#   Reserve             SPACE_RESERVE_MB
+#
+# Reicht es fuer den seriellen Lauf nicht, wird gleich hier abgebrochen - das
+# ist der Moment, in dem es nichts kostet. Reicht es seriell, aber nicht fuer
+# alle Worker, gibt es so viele Worker, wie passen; unter zwei heisst das
+# seriell, mit der BUILD_ORDER aus der Konfiguration. Laut angekuendigt, damit
+# niemand am Morgen ueber einen seriellen Lauf staunt.
+#
+# Bei --resume zaehlen nur die Domains, die noch nicht abgeschlossen sind; der
+# Platz der fertigen ist schon belegt. Halb gebaute Domains zaehlen voll -
+# lieber zu vorsichtig.
+space_check ()
+{
+  [ "$SPACE_CHECK" = true ] || return 0
+
+  local FREI
+  FREI="$(disk_free_mb)"
+  if [ -z "$FREI" ]; then
+    echo "Platzschaetzung: df liefert fuer $SANDBOX_DIR nichts, wird uebersprungen."
+    return 0
+  fi
+
+  local -i D=0 i
+  local -i T=${#BUILD_TARGETS[@]}
+  for (( i=0; i < ${#ALL_SITE_CODES[@]}; i += 1 )); do
+    state_has finalize "${ALL_SITE_TEMPLATE_NAMES[$i]}" "${ALL_SITE_CODES[$i]}" || D+=1
+  done
+
+  local -i SERIELL=$(( D * T * SPACE_UNIT_MB + T * SPACE_TARGET_MB + SPACE_RESERVE_MB ))
+  local -i JE_WORKER=$(( SPACE_WORKER_BASE_MB + D * SPACE_WORKER_DOMAIN_MB ))
+
+  local ZUSATZ=""
+  (( WORKERS > 1 )) && ZUSATZ=", dazu ~$(( JE_WORKER / 1024 )) GB je Worker"
+  echo "Platz: $(( FREI / 1024 )) GB frei unter $SANDBOX_DIR; gebraucht ~$(( SERIELL / 1024 )) GB fuer $D Domains x $T Targets$ZUSATZ."
+
+  if (( FREI < SERIELL )); then
+    abort "Der Platz reicht nicht einmal fuer den seriellen Lauf: $(( FREI / 1024 )) GB frei, ~$(( SERIELL / 1024 )) GB gebraucht. Alte images-* wegraeumen, weniger Domains bauen, oder die Schaetzung in build.conf (SPACE_*) anpassen, falls sie fuer diesen Host zu hoch liegt."
+  fi
+
+  (( WORKERS > 1 )) || return 0
+
+  local -i PASSEN=$(( (FREI - SERIELL) / JE_WORKER ))
+  (( PASSEN >= WORKERS )) && return 0
+
+  echo "!!!"
+  if (( PASSEN >= 2 )); then
+    echo "!!! Platz reicht fuer $PASSEN statt $WORKERS Worker - dieser Lauf baut mit WORKERS=$PASSEN."
+    WORKERS=$PASSEN
+  else
+    echo "!!! Platz reicht nicht fuer den Parallelbetrieb - dieser Lauf baut SERIELL (WORKERS=1, BUILD_ORDER=$BUILD_ORDER_KONFIG)."
+    WORKERS=1
+    BUILD_ORDER="$BUILD_ORDER_KONFIG"
+  fi
+  echo "!!!"
+}
+
 # Uebernimmt im Worker den Zustand des Hauptlaufs. Ohne Pruefung und ohne
 # Meldung: beides hat der Hauptprozess schon getan (state_init oder
 # state_resume), und der Fingerabdruck muss hier nicht erneut verglichen
@@ -2194,6 +2275,15 @@ build_all_images ()
     # dort nur, wenn der golden tree neu gebaut werden muss.
     build_parallel
   else
+
+  # Der serielle Zweig baut direkt im Gluon-Baum - im Parallelbetrieb ist das
+  # der golden tree. Mit Reset oder Clean wird er gleich umgebaut; bricht der
+  # Lauf dabei ab, laege sonst ein halber Baum unter einem Fingerabdruck, der
+  # "aktuell" behauptet, und der naechste Parallellauf nahme ihn ungeprueft
+  # als lowerdir. Kommt zum Tragen, wenn space_check auf seriell zurueckfaellt.
+  if [ "$MAKECLEAN" = true ] || [ "$GITRESET" = true ]; then
+    rm -f -- "$GOLDEN_FP_FILE"
+  fi
 
   # Prepare the Gluon tree once, before the first domain. All domains are then
   # built against this state, without resetting or patching again.
@@ -2652,6 +2742,9 @@ resolve_workers
 # gilt dort nicht. Fuer Hauptprozess UND Worker gesetzt, damit ihre Zeilen in
 # BUILD_TIMES_FILE einheitlich als "parallel" erscheinen; sonst stuenden die
 # Worker, die build.conf selbst lesen, unter "domain".
+# Die konfigurierte Reihenfolge merken: faellt space_check spaeter auf den
+# seriellen Betrieb zurueck, gilt wieder sie.
+BUILD_ORDER_KONFIG="$BUILD_ORDER"
 if (( WORKERS > 1 )); then
   BUILD_ORDER="parallel"
 fi
@@ -2697,6 +2790,11 @@ resolve_targets "$@"
 DATE_SUFFIX="$(date "$DATE_SUFFIX_FORMAT")"
 
 prepare_run_state
+
+# Nach prepare_run_state: erst jetzt sind Domains und Targets bekannt, ein
+# --restart hat den alten Lauf schon weggeraeumt, und ein --resume weiss aus
+# der Zustandsdatei, was fertig ist.
+space_check
 
 generate_all_site_configs
 
