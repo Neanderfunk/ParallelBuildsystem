@@ -680,8 +680,37 @@ ovl_selftest ()
   return 1
 }
 
+# Was dieser Lauf abweichend von der Konfiguration tut (seriell statt
+# parallel, ohne Metriken, weniger Worker). Wird beim Rueckfall laut gemeldet
+# und am Ende des Laufs noch einmal, damit es nicht in Stunden Log untergeht.
+declare -a DEGRADIERT=()
+
+# Eine Warnung, die man beim Durchscrollen nicht uebersieht. Erste Zeile ist
+# die Ueberschrift, jede weitere eine Zeile darunter.
+fat_warning ()
+{
+  local BALKEN="!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  local ZEILE
+  echo
+  echo "$BALKEN"
+  echo "!!! $1"
+  shift
+  for ZEILE in "$@"; do
+    echo "!!!   $ZEILE"
+  done
+  echo "$BALKEN"
+  echo
+}
+
 # Prueft vorab alles, was der Lauf an Werkzeugen und Dateien braucht, und
 # meldet ALLE Maengel auf einmal.
+#
+# Zwei Sorten Maengel: Fehlt etwas fuer den Bau selbst (git, make, ecdsasign,
+# der Schluessel ...), bricht der Lauf ab. Fehlt nur etwas fuer eine Zugabe -
+# den Parallelbetrieb oder den Collector -, laeuft er ohne sie weiter, mit
+# einer fetten Warnung: seriell mit der konfigurierten BUILD_ORDER bzw. ohne
+# Metriken. Ein Buildhost, auf dem das overlay-Modul fehlt, baut also trotzdem
+# - nur langsamer, und das steht unuebersehbar im Log.
 #
 # Ohne das scheitert ein fehlendes Werkzeug erst dort, wo es gebraucht wird.
 # Das Tueckische daran ist die Reihenfolge: die Werkzeuge des Anfangs (git,
@@ -715,22 +744,26 @@ preflight_check ()
       || FEHLT+=( "Signaturschluessel buildkeys/$SIGNKEY_FILE (SIGNKEY_FILE)" )
   fi
 
-  # Der Collector ist ein Python-Skript.
-  if [ "$METRICS" = true ]; then
-    command -v python3 >/dev/null 2>&1 || FEHLT+=( "python3 (fuer METRICS=true; abschaltbar mit METRICS=false)" )
+  # Der Collector ist ein Python-Skript. Ohne python3 ohne Metriken.
+  if [ "$METRICS" = true ] && ! command -v python3 >/dev/null 2>&1; then
+    METRICS=false
+    DEGRADIERT+=( "ohne Metriken (METRICS=false): python3 fehlt" )
+    fat_warning "python3 fehlt - dieser Lauf laeuft OHNE Collector (METRICS=false)." \
+                "Keine Lastdaten, keine Empfehlung fuer WORKERS=auto. Nachruesten: python3."
   fi
 
   # Parallelbetrieb. Erst die Werkzeuge, dann - nur wenn die da sind - der
   # Funktionstest; ohne unshare saehe der nur dasselbe Loch noch einmal.
   local USERNS_HINWEIS=""
+  local -a PAR_FEHLT=()
   if (( WORKERS > 1 )); then
     for WERKZEUG in unshare setsid flock; do
-      command -v "$WERKZEUG" >/dev/null 2>&1 || FEHLT+=( "$WERKZEUG (fuer WORKERS=$WORKERS)" )
+      command -v "$WERKZEUG" >/dev/null 2>&1 || PAR_FEHLT+=( "$WERKZEUG" )
     done
     # Der Scheduler erfaehrt mit "wait -n -p", welcher Worker fertig ist. Das
     # gibt es erst ab bash 5.1; aelter scheiterte er beim ersten fertigen Worker.
     if (( BASH_VERSINFO[0] < 5 || ( BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1 ) )); then
-      FEHLT+=( "bash ab 5.1 fuer wait -n -p, vorhanden ist $BASH_VERSION (fuer WORKERS=$WORKERS)" )
+      PAR_FEHLT+=( "bash ab 5.1 fuer wait -n -p, vorhanden ist $BASH_VERSION" )
     fi
 
     # Kein Vorab-Blick in /proc/filesystems: dort steht overlay erst, wenn das
@@ -741,7 +774,7 @@ preflight_check ()
     if command -v unshare >/dev/null 2>&1; then
       local GRUND
       if ! GRUND="$(ovl_selftest)"; then
-        FEHLT+=( "rootless overlayfs (fuer WORKERS=$WORKERS): $GRUND" )
+        PAR_FEHLT+=( "rootless overlayfs: $GRUND" )
         # Steht overlay auch nach dem Mountversuch nicht in /proc/filesystems,
         # liess sich das Modul nicht laden.
         if ! grep -qw overlay /proc/filesystems; then
@@ -760,10 +793,23 @@ preflight_check ()
 
   if (( ${#FEHLT[@]} > 0 )); then
     echo >&2
-    echo "Vorabpruefung: ${#FEHLT[@]} Voraussetzung(en) fehlen:" >&2
+    echo "Vorabpruefung: ${#FEHLT[@]} Voraussetzung(en) fuer den Bau fehlen:" >&2
     printf '  - %s\n' "${FEHLT[@]}" >&2
-    [ -n "$USERNS_HINWEIS" ] && { echo >&2; echo "Hinweis: $USERNS_HINWEIS" >&2; }
     abort "Bitte zuerst nachruesten. Der Lauf wuerde sonst erst dort scheitern, wo das Fehlende gebraucht wird - womoeglich Stunden nach dem Start."
+  fi
+
+  # Parallelbetrieb nicht moeglich: seriell weiter, laut.
+  if (( ${#PAR_FEHLT[@]} > 0 )); then
+    local -a ZEILEN=( "Es fehlt:" )
+    local M
+    for M in "${PAR_FEHLT[@]}"; do ZEILEN+=( "  - $M" ); done
+    [ -n "$USERNS_HINWEIS" ] && ZEILEN+=( "" "Abhilfe: $USERNS_HINWEIS" )
+    ZEILEN+=( "" "Der Bau laeuft trotzdem, nur langsamer. Ausdruecklich seriell: WORKERS=1." )
+    fat_warning "PARALLELBETRIEB NICHT MOEGLICH - dieser Lauf baut SERIELL (WORKERS=1, BUILD_ORDER=$BUILD_ORDER_KONFIG) statt mit $WORKERS Workern." \
+                "${ZEILEN[@]}"
+    DEGRADIERT+=( "SERIELL statt mit $WORKERS Workern: ${PAR_FEHLT[*]}" )
+    WORKERS=1
+    BUILD_ORDER="$BUILD_ORDER_KONFIG"
   fi
 
   echo "Vorabpruefung bestanden."
@@ -2088,16 +2134,16 @@ space_check ()
   local -i PASSEN=$(( (FREI - SERIELL) / JE_WORKER ))
   (( PASSEN >= WORKERS )) && return 0
 
-  echo "!!!"
   if (( PASSEN >= 2 )); then
-    echo "!!! Platz reicht fuer $PASSEN statt $WORKERS Worker - dieser Lauf baut mit WORKERS=$PASSEN."
+    fat_warning "Platz reicht fuer $PASSEN statt $WORKERS Worker - dieser Lauf baut mit WORKERS=$PASSEN."
+    DEGRADIERT+=( "WORKERS=$PASSEN statt $WORKERS: Plattenplatz" )
     WORKERS=$PASSEN
   else
-    echo "!!! Platz reicht nicht fuer den Parallelbetrieb - dieser Lauf baut SERIELL (WORKERS=1, BUILD_ORDER=$BUILD_ORDER_KONFIG)."
+    fat_warning "Platz reicht nicht fuer den Parallelbetrieb - dieser Lauf baut SERIELL (WORKERS=1, BUILD_ORDER=$BUILD_ORDER_KONFIG)."
+    DEGRADIERT+=( "SERIELL statt mit $WORKERS Workern: Plattenplatz" )
     WORKERS=1
     BUILD_ORDER="$BUILD_ORDER_KONFIG"
   fi
-  echo "!!!"
 }
 
 # Uebernimmt im Worker den Zustand des Hauptlaufs. Ohne Pruefung und ohne
@@ -2413,6 +2459,9 @@ build_all_images ()
   local ELAPSED_TIME_STR
   get_human_friendly_elapsed_time "$(( UPTIME - RUN_UPTIME_BEGIN ))"
   echo "Total build time with BUILD_ORDER=$BUILD_ORDER: $ELAPSED_TIME_STR."
+  if (( ${#DEGRADIERT[@]} > 0 )); then
+    fat_warning "Dieser Lauf lief NICHT wie konfiguriert:" "${DEGRADIERT[@]}"
+  fi
 
   popd >/dev/null
 

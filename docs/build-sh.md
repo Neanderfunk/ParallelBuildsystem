@@ -135,13 +135,18 @@ Später Geladenes gewinnt.
 
 1. Optionen trennen, cwd prüfen, die drei Konfigurationen laden
 2. `resolve_workers` (`auto` → Zahl), bei `WORKERS` ≥ 2 → `BUILD_ORDER=parallel`
-3. `preflight_check` – **alle** Mängel auf einmal:
-   - Werkzeuge: git make patch sed grep awk find xargs cp rsync sort tee date
-     stat mktemp gzip sha256sum getconf sync df tail
-   - `/usr/bin/ecdsasign` (Paket ecdsautils), Signaturschlüssel lesbar
-   - python3 (bei `METRICS=true`)
-   - Parallelbetrieb: unshare, setsid, flock, bash ≥ 5.1, **Selbsttest**
-     (echter rootless Overlay-Mount, siehe 7.9)
+3. `preflight_check` – **alle** Mängel auf einmal, in zwei Sorten:
+   - **für den Bau nötig → Abbruch:** git make patch sed grep awk find xargs
+     cp rsync sort tee date stat mktemp gzip sha256sum getconf sync df tail,
+     `/usr/bin/ecdsasign` (Paket ecdsautils), Signaturschlüssel lesbar
+   - **nur für Zugaben → fette Warnung, Lauf geht weiter:**
+     - Parallelbetrieb (unshare, setsid, flock, bash ≥ 5.1, **Selbsttest** mit
+       echtem rootless Overlay-Mount, siehe 7.9) → seriell mit einem Worker
+       und der konfigurierten `BUILD_ORDER`
+     - python3 → ohne Collector (`METRICS=false`)
+   - Jeder solche Rückfall steht am Ende des Laufs noch einmal im Log
+     („Dieser Lauf lief NICHT wie konfiguriert“), wie auch der Rückfall der
+     Platzprüfung
 4. `tests/check-site-conf.sh --optional` – Lua-Syntax von site.conf und
    image-customization.lua (ohne Lua nur Warnung)
 5. SBRANCH bestimmen, Sites-Datei parsen, Targets auflösen
@@ -394,7 +399,9 @@ build.sh (Hauptprozess, eigene UID)
 | setsid, flock | | util-linux |
 
 - Die Vorabprüfung macht einen **echten** Overlay-Mount wie die Worker
-  (inkl. `rm -rf` + Neuanlegen) und nennt bei Fehlschlag die Abhilfe.
+  (inkl. `rm -rf` + Neuanlegen). Scheitert er oder fehlt ein Werkzeug, baut
+  der Lauf **seriell** weiter, mit fetter Warnung samt Abhilfe am Anfang und
+  Erinnerung am Ende - kein Abbruch.
 - Die Einrichtung einmal als root, der Build-User selbst braucht keine Rechte.
 - wir-horst: overlay-Modul war anfangs nicht geladen, jetzt über
   `modules-load.d` dauerhaft.
