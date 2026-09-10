@@ -13,12 +13,18 @@ Warum die Phasen: Systemlast allein laesst sich nicht deuten. Die erste
 Lastmessung auf wir-horst traf die untaetige prepare-Phase statt eines
 Imagebaus; aufgefallen ist das nur an einem Detail.
 
-Warum nur Proben bei VOLLER Besetzung: beim Hochfahren starten die Worker
+Warum nur Proben, bei denen ALLE Worker belegt sind: beim Hochfahren starten die Worker
 versetzt, am Ende laeuft die Warteschlange leer. In beiden Phasen ist die
 Auslastung niedrig, weil Worker fehlen - nicht weil Luft waere. Ueber den ganzen
 Lauf gemittelt empfaehle der Collector jedes Mal mehr Worker und schaukelte
 sich auf. Ausgewertet wird deshalb nur, wenn genau <workers> Prozesse in
 "build" stecken und keiner in "golden" oder "prepare".
+
+Nebenbei der Worker-Verkehr in Erlang (nach A. K. Erlang, Telefonvermittlung):
+die mittlere Zahl gleichzeitig belegter Worker ueber die Parallelphase, also
+ueber alle Proben mit mindestens einem Worker im Imagebau und niemandem in
+golden/prepare. 6 Worker, im Mittel 4,6 belegt = 4,6 Erl. Die Luecke zur
+Worker-Zahl ist Hochfahren (Startversatz) und Auslaufen der Warteschlange.
 
 Die Empfehlung ist gedaempft und begrenzt: hoechstens ein Worker mehr oder
 weniger je Lauf, nie unter 1, nie ueber die halbe Kernzahl. Ein Regler, der
@@ -32,7 +38,7 @@ import os, re, signal, statistics, subprocess, sys, time
 IOWAIT_ZU_HOCH = 1.0   # Kerne im Mittel, die auf IO warten: Platte ist Engpass
 UTIL_ZU_HOCH   = 50.0  # % mittlere Plattenauslastung: dito
 CPU_LUFT       = 0.65  # unter 65 % CPU-Auslastung ist Platz fuer einen mehr
-MIN_PROBEN     = 300   # unter 5 Minuten bei voller Besetzung: zu duenn
+MIN_PROBEN     = 300   # unter 5 Minuten mit allen Workern belegt: zu duenn
 INTERVALL      = 1.0
 
 status_dir, out_csv, emp_file, pfad, workers, lauf_id = sys.argv[1:7]
@@ -131,6 +137,11 @@ with open(out_csv, "w") as csv:
 voll = [p for p in proben
         if p[3]["build"] == workers and p[3]["golden"] == 0 and p[3]["prepare"] == 0]
 
+# Erlang: mittlere Zahl belegter Worker ueber die Parallelphase
+parallel = [p[3]["build"] for p in proben
+            if p[3]["build"] > 0 and p[3]["golden"] == 0 and p[3]["prepare"] == 0]
+erlang = statistics.mean(parallel) if parallel else 0.0
+
 def p95(w):
     s = sorted(w)
     return s[min(len(s) - 1, int(len(s) * 0.95))]
@@ -138,7 +149,7 @@ def p95(w):
 obergrenze = max(1, KERNE // 2)
 if len(voll) < MIN_PROBEN:
     empfohlen = workers
-    grund = ("zu wenig Proben bei voller Besetzung (%d, mindestens %d) - "
+    grund = ("zu wenig Proben mit allen Workern belegt (%d, mindestens %d) - "
              "Empfehlung unveraendert" % (len(voll), MIN_PROBEN))
     werte = {}
 else:
@@ -154,7 +165,7 @@ else:
                  "%.0f %%) - ein Worker weniger" % (I, M))
     elif A < CPU_LUFT:
         empfohlen = workers + 1
-        grund = ("CPU bei voller Besetzung nur %.0f %% ausgelastet, iowait %.2f "
+        grund = ("CPU mit allen Workern belegt nur %.0f %% ausgelastet, iowait %.2f "
                  "Kerne, Platte %.0f %% - es ist Luft, ein Worker mehr" % (A * 100, I, M))
     else:
         empfohlen = workers
@@ -172,10 +183,12 @@ with open(emp_file + ".tmp", "w") as f:
     f.write("beobachtet_workers=%d\n" % workers)
     f.write("kerne=%d\n" % KERNE)
     f.write("proben=%d\n" % len(proben))
-    f.write("proben_volle_besetzung=%d\n" % len(voll))
+    f.write("proben_alle_belegt=%d\n" % len(voll))
+    f.write("worker_erlang=%.2f\n" % erlang)
+    f.write("worker_erlang_proben=%d\n" % len(parallel))
     for k, v in werte.items():
         f.write("%s=%s\n" % (k, v))
     f.write("begruendung=%s\n" % grund)
 os.replace(emp_file + ".tmp", emp_file)
-print("buildcollect: %d Proben, %d bei voller Besetzung -> empfohlen %d (%s)"
-      % (len(proben), len(voll), geklemmt, grund))
+print("buildcollect: %d Proben, %d mit allen %d Workern belegt, Parallelphase %.1f Erl "
+      "-> empfohlen %d (%s)" % (len(proben), len(voll), workers, erlang, geklemmt, grund))
