@@ -1696,6 +1696,7 @@ run_finalize_step ()
   fi
 
   merge_target_logs      "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
+  status_set finalize - "${ALL_SITE_CODES[$site_index]}"
   get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
 
   local UPTIME
@@ -1729,6 +1730,7 @@ run_build_step ()
   fi
 
   get_site_log_filename  "$TEMPLATE_NAME"  "$SITE_CODE"  "$TARGET"
+  status_set "$BUILD_PHASE" "$TARGET" "$SITE_CODE"
 
   local UPTIME
   read_uptime_as_integer
@@ -1783,6 +1785,43 @@ resolve_targets ()
   fi
 }
 
+# Meldet, was dieser Prozess gerade tut. Der Collector liest das und ordnet
+# jede Probe der Phase zu, in der sie entstand.
+#
+# Ohne das sieht ein Collector nur Systemlast und kann eine untaetige
+# prepare-Phase nicht von einem seriellen Imagebau unterscheiden - genau daran
+# ist die erste Lastmessung auf wir-horst gescheitert: sie traf die
+# prepare-Phase, und aufgefallen ist das nur, weil die aktiven Kerne nie ueber
+# 2,2 stiegen.
+#
+# Eine Datei je Prozess, benannt nach dem Target des Workers oder "main". Die
+# Phasen:
+#
+#   prepare    Baum vorbereiten (make update, Feeds): gut ein Kern
+#   golden     Aufbau des golden tree, also mit Kompilierung: hohe Parallelitaet
+#   build      ein Imagebau: ueberwiegend seriell - die Last, um die es geht
+#   finalize   Manifest, Signatur, Kopie ins Site-Verzeichnis
+#
+# Geschrieben ueber eine temporaere Datei und mv: der Collector liest also nie
+# eine halb geschriebene.
+status_set ()
+{
+  local PHASE="$1" TARGET="${2:--}" DOMAIN="${3:--}"
+  local NAME="${WORKER_TARGET:-main}"
+
+  mkdir -p -- "$STATUS_DIR"
+  printf 'phase=%s\ntarget=%s\ndomain=%s\nseit=%s\npid=%s\n' \
+         "$PHASE" "$TARGET" "$DOMAIN" "$(date +%s)" "$$" > "$STATUS_DIR/$NAME.tmp"
+  mv -f -- "$STATUS_DIR/$NAME.tmp" "$STATUS_DIR/$NAME"
+}
+
+# Meldet diesen Prozess ab: er tut nichts mehr, was der Collector zuordnen
+# muesste.
+status_clear ()
+{
+  rm -f -- "$STATUS_DIR/${WORKER_TARGET:-main}"
+}
+
 # Uebernimmt im Worker den Zustand des Hauptlaufs. Ohne Pruefung und ohne
 # Meldung: beides hat der Hauptprozess schon getan (state_init oder
 # state_resume), und der Fingerabdruck muss hier nicht erneut verglichen
@@ -1812,6 +1851,7 @@ run_prepare ()
 {
   local PREPARE_LOG_FILENAME="$SANDBOX_DIR/assembled/prepare.log"
   echo "Preparing the Gluon tree. The log file is: $PREPARE_LOG_FILENAME"
+  status_set prepare
 
   local UPTIME
   read_uptime_as_integer
@@ -1847,6 +1887,8 @@ worker_run ()
   for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
     run_build_step "$site_index" 0
   done
+
+  status_clear
 }
 
 # Startet einen Worker fuer ein Target, im Hintergrund, in einem frischen
@@ -1969,6 +2011,9 @@ build_parallel ()
     run_prepare
 
     # Direkt im Baum, ohne Overlay - genau das soll ja im golden tree bleiben.
+    # Als "golden" gemeldet: das ist Kompilierung, deren Last der Collector
+    # nicht mit der eines Imagebaus vermengen darf.
+    local BUILD_PHASE="golden"
     local -a TARGETS=( "${BUILD_TARGETS[@]}" )
     local -i target_index
     for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
@@ -2071,6 +2116,7 @@ build_all_images ()
   # geloescht, bevor das Verzeichnis seinen endgueltigen Namen bekommt: ein
   # images-<datum> mit .build-state darin saehe aus wie ein halber Lauf.
   rm -f "$SANDBOX_DIR/images/running/.build-state" "$SITE_SECONDS_FILE"
+  rm -rf -- "$STATUS_DIR"
 
   # rename output to images with timestamp
   mv "./images/running" "./images/images-$DATE_SUFFIX"
@@ -2400,6 +2446,15 @@ OVL_DIR="$SANDBOX_DIR/.overlays"
 # wenn der golden tree vollstaendig gebaut ist - ein abgebrochener Aufbau
 # hinterlaesst also keinen, und der naechste Lauf baut ihn neu.
 GOLDEN_FP_FILE="$OVL_DIR/golden.fingerprint"
+
+# Statusdateien der Prozesse dieses Laufs, siehe status_set. Im Laufverzeichnis,
+# wie .build-state; vor dem Umbenennen weggeraeumt.
+STATUS_DIR="$SANDBOX_DIR/images/running/.status"
+
+# Phase fuer run_build_step: "build", im Aufbau des golden tree "golden". Als
+# Variable statt als Argument, weil run_build_step an mehreren Stellen gerufen
+# wird und nur build_parallel den Unterschied kennt.
+BUILD_PHASE="build"
 
 # Fuer build-info.txt: Startzeitpunkt und Aufruf festhalten, bevor die
 # Argumente durch "shift" verlorengehen.
