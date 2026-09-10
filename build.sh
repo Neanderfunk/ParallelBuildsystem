@@ -220,14 +220,31 @@ write_build_info ()
   local INFO="$SITE_IMAGE_DIR/build-info.txt"
   local MODULE MODULE_LIST PINNED ACTUAL
 
+  # Nur die Zeit dieser Domain, nicht die des ganzen Laufs. Bis 2026-09-10 stand
+  # hier BUILD_START_EPOCH, also der Beginn des Skriptlaufs - dadurch trugen alle
+  # Domains eines Laufs dieselbe Startzeit, und die ausgewiesene Dauer wuchs mit
+  # jeder weiteren Domain an, statt die eigene zu nennen.
+  #
+  # Bei einem fortgesetzten Lauf (--resume) fehlen die Schritte, die aus dem
+  # abgebrochenen Lauf uebernommen wurden: deren Zeit wurde nie in dieser
+  # Prozessinstanz gemessen. Die Summe ist dann zu klein und sagt das auch.
+  local SITE_KEY="$TEMPLATE_NAME/$SITE_CODE"
+  local -i SITE_SECONDS="${SITE_BUILD_SECONDS["$SITE_KEY"]:-0}"
+  local SITE_ELAPSED_STR
+  get_human_friendly_elapsed_time "$SITE_SECONDS"
+  SITE_ELAPSED_STR="$ELAPSED_TIME_STR"
+  if [ "$RESUME" = true ]; then
+    SITE_ELAPSED_STR+=" (unvollstaendig: fortgesetzter Lauf)"
+  fi
+
   {
     echo "Herkunft dieses Images"
     echo "======================"
     echo
     echo "Release:        $SBRANCH"
     echo "Domain:         $SITE_CODE (Template $TEMPLATE_NAME, Zweig $RELBRANCH)"
-    echo "Gebaut:         $(date -d "@$BUILD_START_EPOCH" "+%F %T") bis $(date "+%F %T")"
-    echo "Dauer:          $(( ( $(date +%s) - BUILD_START_EPOCH ) / 60 )) Minuten"
+    echo "Bauzeit:        $SITE_ELAPSED_STR"
+    echo "Lauf:           $(date -d "@$BUILD_START_EPOCH" "+%F %T") bis $(date "+%F %T") ($(( ( $(date +%s) - BUILD_START_EPOCH ) / 60 )) Minuten)"
     echo "Host:           $(uname -n) ($(uname -sr))"
     echo "Aufruf:         $BUILD_COMMAND_LINE"
     echo
@@ -1471,6 +1488,11 @@ run_build_step ()
   read_uptime_as_integer
   local -i ELAPSED="$(( UPTIME - STEP_UPTIME_BEGIN ))"
 
+  # Ausserhalb der Pipeline oben, sonst ginge die Summe in deren Subshell
+  # verloren.
+  local SITE_KEY="$TEMPLATE_NAME/$SITE_CODE"
+  SITE_BUILD_SECONDS["$SITE_KEY"]="$(( ${SITE_BUILD_SECONDS["$SITE_KEY"]:-0} + ELAPSED ))"
+
   local ELAPSED_TIME_STR
   get_human_friendly_elapsed_time "$ELAPSED"
   echo "Finished site code $SITE_CODE, target $TARGET. Elapsed time: $ELAPSED_TIME_STR."
@@ -1488,6 +1510,15 @@ run_build_step ()
 # Steht vor dem Bau, weil der Fingerabdruck des Laufs die Targetliste enthaelt:
 # eine Fortsetzung mit anderer Liste ist keine Fortsetzung.
 declare -a BUILD_TARGETS=()
+
+# Bauzeit je Domain, aufsummiert ueber ihre Target-Schritte. Schluessel ist
+# "<template>/<site_code>", weil die key- und die nokeys-Variante einer Domain
+# denselben site_code tragen und sich nur im Template unterscheiden.
+#
+# Gefuellt wird in run_build_step, gelesen in write_build_info. Das ginge auch
+# aus BUILD_TIMES_FILE, aber write_build_info liefe dann von einer Datei
+# abhaengig, die abschaltbar ist.
+declare -A SITE_BUILD_SECONDS=()
 
 resolve_targets ()
 {
