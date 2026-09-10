@@ -2360,6 +2360,12 @@ build_parallel ()
     echo "Golden tree steht (Fingerabdruck ${GFP:0:16})."
   fi
 
+  # Der Hauptprozess wartet jetzt nur noch auf die Worker und meldet sich ab.
+  # Blieb seine Statusdatei auf "golden" stehen, verwarf der Collector jede
+  # Probe des Parallelbetriebs (Bedingung: niemand in golden/prepare) - im
+  # ersten Lauf auf wir-horst gab es so 0 von 6887 Proben bei voller Besetzung.
+  status_clear
+
   run_parallel
 }
 
