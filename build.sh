@@ -631,7 +631,7 @@ preflight_check ()
   # Funktionstest; ohne unshare saehe der nur dasselbe Loch noch einmal.
   local USERNS_HINWEIS=""
   if (( WORKERS > 1 )); then
-    for WERKZEUG in unshare flock; do
+    for WERKZEUG in unshare setsid flock; do
       command -v "$WERKZEUG" >/dev/null 2>&1 || FEHLT+=( "$WERKZEUG (fuer WORKERS=$WORKERS)" )
     done
     grep -qw overlay /proc/filesystems \
@@ -1655,6 +1655,41 @@ finish_build_times_file ()
     return
   fi
 
+  # Laufende Worker nicht verwaisen lassen. Bricht der Hauptprozess ab - durch
+  # Strg-C, kill oder einen Fehler -, liefen sie sonst weiter: Kindprozesse
+  # beendet niemand, ihre Ergebnisse saemmelte keiner ein, und ein --resume
+  # startete neue Worker in dieselben Overlay-Verzeichnisse, in denen die alten
+  # noch schreiben.
+  #
+  # Nicht zu verwechseln mit einem gescheiterten Worker: den regelt
+  # run_parallel, indem es die uebrigen zu Ende bringt. Dann ist
+  # WORKER_LAUFEND hier schon leer.
+  #
+  # TERM an die ganze Gruppe, hoechstens 10 Sekunden warten - sofort weiter,
+  # sobald alles weg ist -, dann KILL fuer den Rest.
+  if (( ${#WORKER_LAUFEND[@]} > 0 )); then
+    echo "Beende ${#WORKER_LAUFEND[@]} noch laufende(n) Worker: ${WORKER_LAUFEND[*]}" >&2
+    local PID
+    local -i FRIST=0 LEBT
+    for PID in "${!WORKER_LAUFEND[@]}"; do
+      kill -TERM -- "-$PID" 2>/dev/null || true
+    done
+    while (( FRIST < 10 )); do
+      LEBT=0
+      for PID in "${!WORKER_LAUFEND[@]}"; do
+        kill -0 -- "-$PID" 2>/dev/null && LEBT=1
+      done
+      (( LEBT )) || break
+      sleep 1
+      FRIST+=1
+    done
+    for PID in "${!WORKER_LAUFEND[@]}"; do
+      kill -KILL -- "-$PID" 2>/dev/null || true
+    done
+    wait "${!WORKER_LAUFEND[@]}" 2>/dev/null || true
+    WORKER_LAUFEND=()
+  fi
+
   # Am normalen Ende ist der Collector schon gestoppt und seine Empfehlung
   # uebernommen, dann tut das hier nichts. Bei einem Abbruch wertet er noch aus,
   # seine Empfehlung bleibt aber nur in der Datei dieses Laufs - ein
@@ -1985,7 +2020,12 @@ start_worker ()
   (
     cd -- "$SANDBOX_DIR"
     export BUILD_RUN_ID
-    exec unshare -Urm "$SANDBOX_DIR/scripts/ovl-enter.sh" \
+    # setsid: eigene Prozessgruppe. Ein Signal an den Worker allein erreichte
+    # sein make nicht - das ist ein Kind des Workers. An die Gruppe gerichtet
+    # trifft es alles, was der Worker gestartet hat, und nicht den Hauptprozess.
+    # Ohne fork, weil die Subshell kein Gruppenleiter ist; die PID in $! bleibt
+    # also die des Workers, und damit auch die Gruppennummer.
+    exec setsid unshare -Urm "$SANDBOX_DIR/scripts/ovl-enter.sh" \
       "$GLUON_DIR" "$W" "$GLUON_DIR" "$(id -u)" "$(id -g)" \
       "$BUILD_SH" "--worker=$TARGET" \
       "$BUILD_CONF_FILE" "$TARGETS_CONF_FILE" "$DOMAINS_CONF_FILE" "${BUILD_TARGETS[@]}"
@@ -2012,41 +2052,40 @@ start_worker ()
 run_parallel ()
 {
   local -a WARTESCHLANGE=( "${BUILD_TARGETS[@]}" )
-  local -A LAUFEND=()
   local -a GESCHEITERT=()
   local -i GESTARTET=0
   local PID TARGET RC
 
   echo "Parallelbetrieb: ${#WARTESCHLANGE[@]} Targets, bis zu $WORKERS Worker, ${WORKER_START_DELAY}s Versatz beim Hochfahren."
 
-  while (( ${#WARTESCHLANGE[@]} > 0 || ${#LAUFEND[@]} > 0 )); do
+  while (( ${#WARTESCHLANGE[@]} > 0 || ${#WORKER_LAUFEND[@]} > 0 )); do
 
-    while (( ${#GESCHEITERT[@]} == 0 && ${#WARTESCHLANGE[@]} > 0 && ${#LAUFEND[@]} < WORKERS )); do
+    while (( ${#GESCHEITERT[@]} == 0 && ${#WARTESCHLANGE[@]} > 0 && ${#WORKER_LAUFEND[@]} < WORKERS )); do
       if (( GESTARTET > 0 && GESTARTET < WORKERS )); then
         sleep "$WORKER_START_DELAY"
       fi
       TARGET="${WARTESCHLANGE[0]}"
       WARTESCHLANGE=( "${WARTESCHLANGE[@]:1}" )
       start_worker "$TARGET"
-      LAUFEND[$!]="$TARGET"
+      WORKER_LAUFEND[$!]="$TARGET"
       GESTARTET+=1
     done
 
-    (( ${#LAUFEND[@]} > 0 )) || break
+    (( ${#WORKER_LAUFEND[@]} > 0 )) || break
 
     # Mit den PIDs, nicht ohne: sonst wartete wait -n auch auf andere
     # Hintergrundprozesse dieses Laufs. Mit errexit fuehrte ein Exitcode
     # ungleich null sofort zum Abbruch - daher das "|| RC=$?".
     RC=0
-    wait -n -p PID "${!LAUFEND[@]}" || RC=$?
-    TARGET="${LAUFEND[$PID]}"
-    unset "LAUFEND[$PID]"
+    wait -n -p PID "${!WORKER_LAUFEND[@]}" || RC=$?
+    TARGET="${WORKER_LAUFEND[$PID]}"
+    unset "WORKER_LAUFEND[$PID]"
 
     if (( RC == 0 )); then
       echo "Worker fertig: $TARGET"
       ovl_discard_dir "$OVL_DIR/$TARGET"
     else
-      echo "Worker GESCHEITERT: $TARGET (Exitcode $RC) - siehe $OVL_DIR/$TARGET.log. Es werden keine weiteren gestartet, die laufenden ($((${#LAUFEND[@]}))) noch zu Ende gebracht." >&2
+      echo "Worker GESCHEITERT: $TARGET (Exitcode $RC) - siehe $OVL_DIR/$TARGET.log. Es werden keine weiteren gestartet, die laufenden ($((${#WORKER_LAUFEND[@]}))) noch zu Ende gebracht." >&2
       GESCHEITERT+=( "$TARGET" )
       # Overlay bewusst stehen lassen: sein upperdir zeigt, wie weit der
       # Worker kam.
@@ -2542,6 +2581,10 @@ BUILD_PHASE="build"
 # des letzten lesen koennen.
 METRICS_DIR="$SANDBOX_DIR/metrics"
 COLLECTOR_PID=""
+
+# Laufende Worker, PID -> Target. Global statt lokal in run_parallel, damit der
+# EXIT-Trap sie bei einem Abbruch des Hauptprozesses beenden kann.
+declare -A WORKER_LAUFEND=()
 
 # Fuer build-info.txt: Startzeitpunkt und Aufruf festhalten, bevor die
 # Argumente durch "shift" verlorengehen.
