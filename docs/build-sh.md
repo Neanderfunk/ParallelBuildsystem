@@ -514,7 +514,35 @@ build.sh (Hauptprozess, eigene UID)
   dann sind es nur noch **D × 94 / W** plus Abschluss (Beispiel 86 Domains,
   W = 6: ~22 h).
 
-### 8.7 Multidomain (Einordnung)
+### 8.7 Erster Parallellauf auf wir-horst (10.09.2026, gemessen)
+
+`domains-broken.conf` mit 5 Domains × 6 Targets (ath79-generic, ath79-nand,
+mediatek-filogic, mediatek-mt7622, ramips-mt7621, x86-64), `WORKERS=6`,
+Stand `111be7c`. Vergleich: serieller Lauf mit denselben 6 Targets am selben
+Tag (3 Domains, 143 min).
+
+| Phase | parallel | seriell (Vergleich / Hochrechnung) |
+|---|---|---|
+| prepare (mit Reset + Clean) | 14 min | ~14 min |
+| erste Domain (golden tree, 6 Targets nacheinander) | 66 min | 65 min |
+| 4 Folgedomains (24 Bauschritte) | **41 min** Wandzeit | ~112 min (4 × 27–29 min) |
+| finalize, 5 Domains | 1 min | 1 min |
+| **ganzer Lauf** | **124 min** | **~193 min** |
+
+- Folgedomains **2,7× schneller**, ganzer Lauf 1,6× – bei nur 6 Targets
+  dominiert der golden tree. Mit 22 Targets und vielen Domains wiegt er
+  entsprechend weniger.
+- Ein Bauschritt dauert unter Last im Mittel 475 s statt ~280 s seriell
+  (1,7× langsamer), dafür laufen im Mittel 4,6 gleichzeitig (Schrittsumme
+  190 min in 41 min).
+- Die Worker brauchten je 30–35 min (ein Target über 4 Domains, x86-64 am
+  längsten). Der Startversatz (`WORKER_START_DELAY` 60 s × 5 Worker) kostet
+  davon ~5 min – spürbar, wenn es kaum mehr Targets als Worker gibt.
+- Collector: keine Auswertung, 0 von 6887 Proben galten als „alle Worker
+  aktiv“ – Fehler, der Hauptprozess blieb auf Status „golden“ stehen
+  (behoben in `1f2b3ae`).
+
+### 8.8 Multidomain (Einordnung)
 
 - Kosten hängen an der **Zahl der Images**, nicht an der Zahl der Domains darin.
 - Gewinn nur, wenn Varianten wegfallen: eine setupmode-Firmware statt 43,
@@ -527,9 +555,8 @@ build.sh (Hauptprozess, eigene UID)
 
 ## 9. Grenzen und offene Punkte
 
-- Parallelbetrieb auf wir-horst: erster Lauf am 10.09.2026 gestartet;
-  mehrere Worker gleichzeitig im echten Bau und der golden-Neuaufbau dort
-  zum ersten Mal.
+- Parallelbetrieb auf wir-horst: erster Lauf am 10.09.2026 erfolgreich
+  (8.7), golden-Neuaufbau und 6 Worker gleichzeitig im echten Bau.
 - Log eines gescheiterten Schritts geht beim `--resume` verloren
   (liegt ungepackt in `assembled/`).
 - Abschluss aller Domains erst am Ende des Parallellaufs – die Site-Verzeichnisse
