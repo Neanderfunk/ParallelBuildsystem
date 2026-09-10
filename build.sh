@@ -727,24 +727,32 @@ preflight_check ()
     for WERKZEUG in unshare setsid flock; do
       command -v "$WERKZEUG" >/dev/null 2>&1 || FEHLT+=( "$WERKZEUG (fuer WORKERS=$WORKERS)" )
     done
-    grep -qw overlay /proc/filesystems \
-      || FEHLT+=( "overlayfs im Kernel (fuer WORKERS=$WORKERS)" )
     # Der Scheduler erfaehrt mit "wait -n -p", welcher Worker fertig ist. Das
     # gibt es erst ab bash 5.1; aelter scheiterte er beim ersten fertigen Worker.
     if (( BASH_VERSINFO[0] < 5 || ( BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1 ) )); then
       FEHLT+=( "bash ab 5.1 fuer wait -n -p, vorhanden ist $BASH_VERSION (fuer WORKERS=$WORKERS)" )
     fi
 
-    if command -v unshare >/dev/null 2>&1 && grep -qw overlay /proc/filesystems; then
+    # Kein Vorab-Blick in /proc/filesystems: dort steht overlay erst, wenn das
+    # Modul geladen ist, und das laedt der Kernel beim ersten Mount selbst nach
+    # (auch aus einem User-Namespace, ueber den Alias fs-overlay). Auf einem
+    # frisch gebooteten Ubuntu fehlte es dort, obwohl alles da war. Der
+    # Selbsttest mountet wirklich und entscheidet damit allein.
+    if command -v unshare >/dev/null 2>&1; then
       local GRUND
       if ! GRUND="$(ovl_selftest)"; then
         FEHLT+=( "rootless overlayfs (fuer WORKERS=$WORKERS): $GRUND" )
+        # Steht overlay auch nach dem Mountversuch nicht in /proc/filesystems,
+        # liess sich das Modul nicht laden.
+        if ! grep -qw overlay /proc/filesystems; then
+          USERNS_HINWEIS="overlayfs ist nicht geladen und liess sich nicht nachladen. Einmalig als root: modprobe overlay, dauerhaft mit einer Zeile \"overlay\" in /etc/modules-load.d/overlay.conf. Gemeint ist das Kernelmodul, nicht fuse-overlayfs - das ist fuer diesen Zweck untauglich."
+        fi
         # Ubuntu ab 23.10 sperrt unprivilegierte User-Namespaces per AppArmor.
         # Steht der Schalter auf 1, ist das mit hoher Wahrscheinlichkeit die
         # Ursache - dann gleich die Abhilfe nennen statt raten zu lassen.
         local SPERRE=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
         if [ -r "$SPERRE" ] && [ "$(cat "$SPERRE")" = 1 ]; then
-          USERNS_HINWEIS="AppArmor sperrt unprivilegierte User-Namespaces (kernel.apparmor_restrict_unprivileged_userns = 1). Einmalig als root: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0, dauerhaft ueber eine Datei in /etc/sysctl.d/."
+          USERNS_HINWEIS="${USERNS_HINWEIS:+$USERNS_HINWEIS }AppArmor sperrt unprivilegierte User-Namespaces (kernel.apparmor_restrict_unprivileged_userns = 1). Einmalig als root: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0, dauerhaft ueber eine Datei in /etc/sysctl.d/."
         fi
       fi
     fi
