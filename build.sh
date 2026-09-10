@@ -225,17 +225,16 @@ write_build_info ()
   # Domains eines Laufs dieselbe Startzeit, und die ausgewiesene Dauer wuchs mit
   # jeder weiteren Domain an, statt die eigene zu nennen.
   #
-  # Bei einem fortgesetzten Lauf (--resume) fehlen die Schritte, die aus dem
-  # abgebrochenen Lauf uebernommen wurden: deren Zeit wurde nie in dieser
-  # Prozessinstanz gemessen. Die Summe ist dann zu klein und sagt das auch.
-  local SITE_KEY="$TEMPLATE_NAME/$SITE_CODE"
-  local -i SITE_SECONDS="${SITE_BUILD_SECONDS["$SITE_KEY"]:-0}"
+  # Summiert aus SITE_SECONDS_FILE. Die Datei liegt in images/running und
+  # ueberlebt damit einen Abbruch: beim --resume stehen die Zeiten der schon
+  # erledigten Schritte noch darin, die Summe ist also auch dann vollstaendig.
+  local -i SITE_SECONDS
+  SITE_SECONDS="$(awk -F'\t' -v k="$TEMPLATE_NAME/$SITE_CODE" \
+                   '$1 == k { s += $2 } END { print s + 0 }' \
+                   "$SITE_SECONDS_FILE" 2>/dev/null || echo 0)"
   local SITE_ELAPSED_STR
   get_human_friendly_elapsed_time "$SITE_SECONDS"
   SITE_ELAPSED_STR="$ELAPSED_TIME_STR"
-  if [ "$RESUME" = true ]; then
-    SITE_ELAPSED_STR+=" (unvollstaendig: fortgesetzter Lauf)"
-  fi
 
   {
     echo "Herkunft dieses Images"
@@ -1540,10 +1539,6 @@ run_build_step ()
   read_uptime_as_integer
   local -i ELAPSED="$(( UPTIME - STEP_UPTIME_BEGIN ))"
 
-  # Ausserhalb der Pipeline oben, sonst ginge die Summe in deren Subshell
-  # verloren.
-  local SITE_KEY="$TEMPLATE_NAME/$SITE_CODE"
-  SITE_BUILD_SECONDS["$SITE_KEY"]="$(( ${SITE_BUILD_SECONDS["$SITE_KEY"]:-0} + ELAPSED ))"
 
   local ELAPSED_TIME_STR
   get_human_friendly_elapsed_time "$ELAPSED"
@@ -1554,6 +1549,11 @@ run_build_step ()
   # Erst hier, nach der Pipeline. Mit errexit und pipefail kommt der Ablauf nur
   # bis hierher, wenn make durchgelaufen ist.
   state_mark build "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET"
+
+  # Die Bauzeit fuer build-info.txt. Nach state_mark, damit nur gezaehlt wird,
+  # was auch als erledigt gilt: ein Abbruch zwischen beiden liesse die Zeit
+  # fehlen statt doppelt zaehlen.
+  printf '%s/%s\t%s\n' "$TEMPLATE_NAME" "$SITE_CODE" "$ELAPSED" >> "$SITE_SECONDS_FILE"
 }
 
 # Targets given on the command line win, otherwise the enabled entries of
@@ -1563,14 +1563,6 @@ run_build_step ()
 # eine Fortsetzung mit anderer Liste ist keine Fortsetzung.
 declare -a BUILD_TARGETS=()
 
-# Bauzeit je Domain, aufsummiert ueber ihre Target-Schritte. Schluessel ist
-# "<template>/<site_code>", weil die key- und die nokeys-Variante einer Domain
-# denselben site_code tragen und sich nur im Template unterscheiden.
-#
-# Gefuellt wird in run_build_step, gelesen in write_build_info. Das ginge auch
-# aus BUILD_TIMES_FILE, aber write_build_info liefe dann von einer Datei
-# abhaengig, die abschaltbar ist.
-declare -A SITE_BUILD_SECONDS=()
 
 resolve_targets ()
 {
@@ -1679,7 +1671,7 @@ build_all_images ()
   # Der Lauf ist durch, die Zustandsdatei hat ihren Zweck erfuellt. Sie wird
   # geloescht, bevor das Verzeichnis seinen endgueltigen Namen bekommt: ein
   # images-<datum> mit .build-state darin saehe aus wie ein halber Lauf.
-  rm -f "$SANDBOX_DIR/images/running/.build-state"
+  rm -f "$SANDBOX_DIR/images/running/.build-state" "$SITE_SECONDS_FILE"
 
   # rename output to images with timestamp
   mv "./images/running" "./images/images-$DATE_SUFFIX"
@@ -1978,6 +1970,17 @@ if (( $# < 3 )); then
 fi
 
 SANDBOX_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Bauzeit je Domain, eine Zeile "<template>/<site_code><TAB><sekunden>" je
+# erledigtem Bauschritt. Schluessel mit Template, weil key- und nokeys-Variante
+# denselben site_code tragen.
+#
+# Eine Datei statt eines Arrays: im Parallelbetrieb ist jeder Worker ein
+# eigener Prozess, und dessen Array saehe der Hauptprozess, der
+# write_build_info ausfuehrt, nie. Das Anhaengen einer kurzen Zeile ist
+# atomar (O_APPEND, unter PIPE_BUF), mehrere Worker koennen gleichzeitig
+# schreiben.
+SITE_SECONDS_FILE="$SANDBOX_DIR/images/running/.site-seconds"
 
 # Fuer build-info.txt: Startzeitpunkt und Aufruf festhalten, bevor die
 # Argumente durch "shift" verlorengehen.
