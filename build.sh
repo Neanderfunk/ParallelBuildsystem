@@ -2363,6 +2363,61 @@ build_parallel ()
   run_parallel
 }
 
+# Eckdaten des fertigen Laufs in einem Kasten, als Letztes im Log: Dauer,
+# Umfang, Zahl der Images, Groessen, freier Platz. Groessen per du, Images
+# ohne die .manifest-Dateien gezaehlt.
+print_run_summary ()
+{
+  local DIR="$1"
+  local -i SEK="$2"
+  local -i D=${#ALL_SITE_RELBRANCHES[@]} T=${#BUILD_TARGETS[@]}
+  # prepare-Zeit dieses Laufs aus der Zeiten-CSV (Spalten: run_id,...,phase
+  # an 5., seconds an 9. Stelle)
+  local -i PREP=0
+  if [ -f "$BUILD_TIMES_FILE" ]; then
+    PREP=$(awk -F, -v r="$BUILD_RUN_ID" '$1 == r && $5 == "prepare" { s += $9 } END { print s + 0 }' "$BUILD_TIMES_FILE")
+  fi
+  local ZEIT
+  printf -v ZEIT '%d h %02d min' $(( SEK / 3600 )) $(( SEK % 3600 / 60 ))
+  if (( D > 0 )); then
+    ZEIT+="  (prepare $(( PREP / 60 )) min, je Domain im Mittel $(( (SEK - PREP) / D / 60 )) min)"
+  fi
+
+  local MODUS="seriell, BUILD_ORDER=$BUILD_ORDER"
+  (( WORKERS > 1 )) && MODUS="parallel, $WORKERS Worker"
+
+  local -i N_SYS N_FAC N_OTH
+  N_SYS=$(find "$DIR" -path '*/sysupgrade/*' -type f ! -name '*.manifest*' 2>/dev/null | wc -l)
+  N_FAC=$(find "$DIR" -path '*/factory/*' -type f 2>/dev/null | wc -l)
+  N_OTH=$(find "$DIR" -path '*/other/*' -type f 2>/dev/null | wc -l)
+
+  # Groessen in KB: gesamt, Pakete, opkg-Feeds, Logs; Images = der Rest
+  local -i KB_ALL KB_PKG=0 KB_OPKG=0 KB_LOG
+  KB_ALL=$(du -sk "$DIR" 2>/dev/null | cut -f1)
+  [ -d "$DIR/packages" ] && KB_PKG=$(du -sk "$DIR/packages" | cut -f1)
+  local O
+  for O in "$DIR"/opkg-*; do
+    [ -d "$O" ] && KB_OPKG+=$(du -sk "$O" | cut -f1)
+  done
+  KB_LOG=$(find "$DIR" -name '*.log*' -type f -printf '%s\n' 2>/dev/null | awk '{ s += $1 } END { print int(s / 1024) }')
+  local -i KB_IMG=$(( KB_ALL - KB_PKG - KB_OPKG - KB_LOG ))
+  kb () { awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1f GB", k / 1048576; else if (k >= 1024) printf "%.0f MB", k / 1024; else printf "%d KB", k }'; }
+
+  local FREI
+  FREI="$(disk_free_mb)"
+
+  local BALKEN="=============================================================================="
+  echo
+  echo "$BALKEN"
+  printf ' %-8s %s\n' "Lauf" "$SBRANCH -> images/${DIR##*/}  ($MODUS)"
+  printf ' %-8s %s\n' "Dauer" "$ZEIT"
+  printf ' %-8s %s\n' "Umfang" "$D Domains x $T Targets = $(( D * T )) Bauschritte"
+  printf ' %-8s %s\n' "Images" "$(( N_SYS + N_FAC + N_OTH )) (sysupgrade $N_SYS, factory $N_FAC, other $N_OTH)"
+  printf ' %-8s %s\n' "Groesse" "$(kb "$KB_ALL"): Images $(kb "$KB_IMG"), Pakete $(kb "$KB_PKG"), opkg $(kb "$KB_OPKG"), Logs $(kb "$KB_LOG")"
+  [ -n "$FREI" ] && printf ' %-8s %s\n' "Platte" "$(( FREI / 1024 )) GB frei unter $SANDBOX_DIR"
+  echo "$BALKEN"
+}
+
 build_all_images ()
 {
   local -a TARGETS=( "${BUILD_TARGETS[@]}" )
@@ -2459,9 +2514,7 @@ build_all_images ()
   local ELAPSED_TIME_STR
   get_human_friendly_elapsed_time "$(( UPTIME - RUN_UPTIME_BEGIN ))"
   echo "Total build time with BUILD_ORDER=$BUILD_ORDER: $ELAPSED_TIME_STR."
-  if (( ${#DEGRADIERT[@]} > 0 )); then
-    fat_warning "Dieser Lauf lief NICHT wie konfiguriert:" "${DEGRADIERT[@]}"
-  fi
+  local -i RUN_SECONDS=$(( UPTIME - RUN_UPTIME_BEGIN ))
 
   popd >/dev/null
 
@@ -2487,6 +2540,11 @@ build_all_images ()
   # "modules-<ts>/packages", obwohl das Verzeichnis images-<ts> heisst.)
   if [ -d "./images/images-$DATE_SUFFIX/packages" ]; then
     echo "- Packages dir: images-$DATE_SUFFIX/packages"
+  fi
+
+  print_run_summary "./images/images-$DATE_SUFFIX" "$RUN_SECONDS"
+  if (( ${#DEGRADIERT[@]} > 0 )); then
+    fat_warning "Dieser Lauf lief NICHT wie konfiguriert:" "${DEGRADIERT[@]}"
   fi
 }
 

@@ -199,6 +199,21 @@ Später Geladenes gewinnt.
 - `compress_build_logs` – Rückfallebene für ungepackte Alt-Logs
 - Zustandsdatei und Statusverzeichnis löschen
 - `images/running` → `images/images-<epoch>`
+- Kasten mit den Eckdaten als Letztes im Log:
+
+  ```
+  ==============================================================================
+   Lauf     26091021bro -> images/images-1789067658  (parallel, 6 Worker)
+   Dauer    2 h 04 min  (prepare 21 min, je Domain im Mittel 20 min)
+   Umfang   5 Domains x 6 Targets = 30 Bauschritte
+   Images   … (sysupgrade …, factory …, other …)
+   Groesse  …: Images …, Pakete …, opkg …, Logs …
+   Platte   … GB frei unter <Checkout>
+  ==============================================================================
+  ```
+
+- darunter, falls der Lauf nicht wie konfiguriert lief (seriell statt
+  parallel, weniger Worker, ohne Metriken), noch einmal die fette Warnung
 
 ---
 
