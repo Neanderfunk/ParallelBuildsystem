@@ -458,12 +458,70 @@ set_config_defaults ()
   BUILD_ORDER="domain"
   BUILD_TIMES_FILE="$SANDBOX_DIR/build-times.csv"
 
+  # Parallelbetrieb, siehe build.conf. 1 = seriell wie bisher, ohne Overlay.
+  WORKERS=1
+  WORKER_START_DELAY=60
+
   # Quellen vorab holen, mit Wiederholung. 0 Versuche schaltet den Schritt ab.
   DOWNLOAD_ATTEMPTS=5
   DOWNLOAD_RETRY_DELAY=30
 
   DATE_SUFFIX_FORMAT="+%s"
   SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
+}
+
+# Raeumt ein Overlay-Arbeitsverzeichnis weg. overlayfs legt darin work/work
+# mit Modus 000 an, ohne chmod scheitert das rm schon beim eigenen Benutzer.
+ovl_discard_dir ()
+{
+  local DIR="$1"
+  [ -e "$DIR" ] || return 0
+  chmod -R u+rwx -- "$DIR" 2>/dev/null || true
+  rm -rf -- "$DIR"
+}
+
+# Prueft, ob dieser Host kann, was ein Worker spaeter tut: rootless ein
+# Kernel-overlayfs mounten, darin als eigene UID arbeiten, und dabei den
+# golden tree unberuehrt lassen. Benutzt dafuer scripts/ovl-enter.sh, prueft
+# also genau den Weg, den die Worker nehmen - nicht bloss, ob die Werkzeuge
+# da sind. Nur ein echter Mount zeigt, ob der Kernel oder AppArmor dazwischen
+# geht.
+#
+# Getestet wird auch "rm -rf" samt Neuanlegen am selben Ort, denn genau daran
+# ist fuse-overlayfs gescheitert.
+#
+# 0 bei Erfolg, sonst 1 und der Grund auf stdout.
+ovl_selftest ()
+{
+  local T="$OVL_DIR/selftest"
+  local OUT
+
+  ovl_discard_dir "$T"
+  mkdir -p "$T/gold/verz/unter" "$T/w/lower" "$T/w/upper" "$T/w/work" \
+    || { echo "kann $T nicht anlegen"; return 1; }
+  echo golden > "$T/gold/stand"
+
+  OUT="$(unshare -Urm "$SANDBOX_DIR/scripts/ovl-enter.sh" \
+           "$T/gold" "$T/w" "$T/gold" "$(id -u)" "$(id -g)" \
+           bash -c '
+             [ "$(id -u)" = "$1" ] || { echo "UID-Wechsel misslungen (uid $(id -u))"; exit 1; }
+             rm -rf "$2/verz" && mkdir "$2/verz" && mkdir "$2/verz/neu" \
+               || { echo "rm -rf und Neuanlegen im Overlay scheitert"; exit 1; }
+             echo neu > "$2/stand"
+             echo ok
+           ' _ "$(id -u)" "$T/gold" 2>&1)" || true
+
+  # Der Test hat im Overlay "stand" ueberschrieben. Steht auf dem Host danach
+  # nicht mehr "golden" darin, hat das Overlay nicht isoliert.
+  if [ "$(tail -n 1 <<<"$OUT")" = "ok" ] && [ "$(cat "$T/gold/stand" 2>/dev/null)" != "golden" ]; then
+    OUT="das Overlay isoliert nicht - der Test hat den golden tree veraendert"
+  fi
+
+  ovl_discard_dir "$T"
+
+  [ "$(tail -n 1 <<<"$OUT")" = "ok" ] && return 0
+  echo "${OUT:-unshare lieferte nichts}" | tr '\n' ' '
+  return 1
 }
 
 # Prueft vorab alles, was der Lauf an Werkzeugen und Dateien braucht, und
@@ -501,11 +559,37 @@ preflight_check ()
       || FEHLT+=( "Signaturschluessel buildkeys/$SIGNKEY_FILE (SIGNKEY_FILE)" )
   fi
 
+  # Parallelbetrieb. Erst die Werkzeuge, dann - nur wenn die da sind - der
+  # Funktionstest; ohne unshare saehe der nur dasselbe Loch noch einmal.
+  local USERNS_HINWEIS=""
+  if (( WORKERS > 1 )); then
+    for WERKZEUG in unshare flock; do
+      command -v "$WERKZEUG" >/dev/null 2>&1 || FEHLT+=( "$WERKZEUG (fuer WORKERS=$WORKERS)" )
+    done
+    grep -qw overlay /proc/filesystems \
+      || FEHLT+=( "overlayfs im Kernel (fuer WORKERS=$WORKERS)" )
+
+    if command -v unshare >/dev/null 2>&1 && grep -qw overlay /proc/filesystems; then
+      local GRUND
+      if ! GRUND="$(ovl_selftest)"; then
+        FEHLT+=( "rootless overlayfs (fuer WORKERS=$WORKERS): $GRUND" )
+        # Ubuntu ab 23.10 sperrt unprivilegierte User-Namespaces per AppArmor.
+        # Steht der Schalter auf 1, ist das mit hoher Wahrscheinlichkeit die
+        # Ursache - dann gleich die Abhilfe nennen statt raten zu lassen.
+        local SPERRE=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+        if [ -r "$SPERRE" ] && [ "$(cat "$SPERRE")" = 1 ]; then
+          USERNS_HINWEIS="AppArmor sperrt unprivilegierte User-Namespaces (kernel.apparmor_restrict_unprivileged_userns = 1). Einmalig als root: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0, dauerhaft ueber eine Datei in /etc/sysctl.d/."
+        fi
+      fi
+    fi
+  fi
+
   if (( ${#FEHLT[@]} > 0 )); then
     echo >&2
     echo "Vorabpruefung: ${#FEHLT[@]} Voraussetzung(en) fehlen:" >&2
     printf '  - %s\n' "${FEHLT[@]}" >&2
-    abort "Bitte zuerst nachruesten. Der Lauf wuerde sonst erst dort scheitern, wo das Fehlende gebraucht wird - bei ecdsasign etwa nach dem letzten Target der ersten Domain."
+    [ -n "$USERNS_HINWEIS" ] && { echo >&2; echo "Hinweis: $USERNS_HINWEIS" >&2; }
+    abort "Bitte zuerst nachruesten. Der Lauf wuerde sonst erst dort scheitern, wo das Fehlende gebraucht wird - womoeglich Stunden nach dem Start."
   fi
 
   echo "Vorabpruefung bestanden."
@@ -2037,6 +2121,12 @@ SANDBOX_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # schreiben.
 SITE_SECONDS_FILE="$SANDBOX_DIR/images/running/.site-seconds"
 
+# Arbeitsverzeichnisse der Worker-Overlays: je Worker lower (Bind-Mount des
+# golden tree), upper (was der Worker schreibt) und work (fuer overlayfs).
+# Neben dem Gluon-Baum, nicht darin - sonst saehe jedes Overlay die anderen als
+# Teil seines lowerdir.
+OVL_DIR="$SANDBOX_DIR/.overlays"
+
 # Fuer build-info.txt: Startzeitpunkt und Aufruf festhalten, bevor die
 # Argumente durch "shift" verlorengehen.
 BUILD_START_EPOCH="$(date +%s)"
@@ -2066,6 +2156,10 @@ load_domains_config "$DOMAINS_CONF_FILE"
 # Nach den Konfigurationsdateien, weil die Pruefung von deren Werten abhaengt
 # (SIGNKEY_FILE), und vor allem anderen, damit ein Mangel nichts mehr kostet.
 preflight_check
+
+if (( WORKERS > 1 )); then
+  abort "WORKERS=$WORKERS: die Voraussetzungen fuer den Parallelbetrieb sind erfuellt, der Parallelbetrieb selbst ist aber noch nicht fertig. Bis dahin bitte WORKERS=1."
+fi
 
 # Syntaxcheck der Lua-Dateien in den Templates, dauert zwei Sekunden. Ein
 # Tippfehler in der site.conf faellt damit hier auf und nicht erst nach
