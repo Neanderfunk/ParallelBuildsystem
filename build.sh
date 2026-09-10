@@ -7,6 +7,31 @@ set -o nounset
 set -o pipefail
 set -o errtrace  # ERR-Trap gilt auch in Funktionen und Subshells
 
+# Freier Platz in MB unter SANDBOX_DIR, oder leer, wenn df nichts liefert.
+#
+# Gemessen wird am Sandbox-Verzeichnis: dort liegen Gluon-Baum, images/,
+# assembled/ und .overlays/. Liegt eines davon per Symlink auf einer anderen
+# Platte, sieht diese Pruefung das nicht.
+disk_free_mb ()
+{
+  df -Pm -- "${SANDBOX_DIR:-.}" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+
+# Sagt es laut, wenn die Platte praktisch voll ist. Die eigentliche Meldung
+# ("No space left on device") steht sonst irgendwo weiter oben zwischen den
+# Error- und Leaving-directory-Zeilen von make -j - und im Parallelbetrieb im
+# Log eines Workers, das auf derselben vollen Platte womoeglich selbst nicht
+# mehr geschrieben werden konnte. Gemessen am 10.09. mit einem kleinen tmpfs:
+# die Abbruchmeldung nannte nur Exitcode und Zeile, nie die Ursache.
+report_disk_if_full ()
+{
+  local FREI
+  FREI="$(disk_free_mb)" || true
+  if [ -n "$FREI" ] && (( FREI < ${DISK_FULL_MB:-1024} )); then
+    echo "  PLATTE VOLL: unter ${SANDBOX_DIR:-.} sind nur noch $FREI MB frei - sehr wahrscheinlich die Ursache (No space left on device)." >&2
+  fi
+}
+
 # Sagt beim Abbruch, woran es lag. Ohne das endet der Bau seit der
 # Fehlererkennung wortlos mit einem Exitcode - genau das war frueher das
 # Problem, nur eine Ebene hoeher.
@@ -20,6 +45,7 @@ on_error ()
   echo >&2
   echo "build.sh: Abbruch mit Exitcode $EXIT_CODE$SIGNAL_HINT" >&2
   echo "  Zeile ${BASH_LINENO[0]}: $BASH_COMMAND" >&2
+  report_disk_if_full
 }
 trap on_error ERR
 
@@ -610,7 +636,7 @@ preflight_check ()
   # Was build.sh und seine Helfer (esign, prepare.sh, lib-patch.sh) direkt
   # aufrufen.
   for WERKZEUG in git make patch sed grep awk find xargs cp rsync sort tee \
-                  date stat mktemp gzip sha256sum getconf sync; do
+                  date stat mktemp gzip sha256sum getconf sync df tail; do
     command -v "$WERKZEUG" >/dev/null 2>&1 || FEHLT+=( "$WERKZEUG" )
   done
 
@@ -2086,6 +2112,13 @@ run_parallel ()
       ovl_discard_dir "$OVL_DIR/$TARGET"
     else
       echo "Worker GESCHEITERT: $TARGET (Exitcode $RC) - siehe $OVL_DIR/$TARGET.log. Es werden keine weiteren gestartet, die laufenden ($((${#WORKER_LAUFEND[@]}))) noch zu Ende gebracht." >&2
+      # Das Ende seines Logs hierher, damit die Ursache im Hauptlauf steht und
+      # nicht nur ein Verweis auf eine Datei, die bei voller Platte leer sein
+      # kann. Die ausfuehrlichen Buildlogs liegen je Domain in
+      # assembled/<template>/<domain>/build-$TARGET.log.
+      echo "  Letzte Zeilen von $OVL_DIR/$TARGET.log:" >&2
+      tail -n 25 -- "$OVL_DIR/$TARGET.log" 2>/dev/null | sed 's/^/    | /' >&2 || true
+      report_disk_if_full
       GESCHEITERT+=( "$TARGET" )
       # Overlay bewusst stehen lassen: sein upperdir zeigt, wie weit der
       # Worker kam.
