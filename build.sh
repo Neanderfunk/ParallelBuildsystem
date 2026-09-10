@@ -399,15 +399,18 @@ write_build_info ()
 }
 
 # Mit Target: das Log genau eines Bauschritts, build-<target>.log. Ohne: das
-# eine build.log der Domain, in das finalize schreibt und das veroeffentlicht
-# wird.
+# Log des Abschlusses der Domain, build.log, in das finalize schreibt.
+#
+# Beide liegen nur, solange ihr Schritt laeuft, ungepackt in assembled/. Ist ein
+# Schritt durch, wandert sein Log gepackt nach images/running (store_target_log,
+# finish_site_log) - assembled/ raeumt jeder Lauf ab, auch der --resume.
 #
 # Warum je Target getrennt: im Parallelbetrieb bauen mehrere Worker
 # verschiedene Targets derselben Domain gleichzeitig. In ein gemeinsames Log
 # geschrieben, ergaebe das zwar keine zerrissenen Zeilen (tee --append, kurze
 # Zeilen sind atomar), aber ein Durcheinander aus zwei Builds Zeile um Zeile.
-# merge_target_logs fuegt die Teile vor finalize in Target-Reihenfolge zusammen,
-# das veroeffentlichte build.log sieht also aus wie immer.
+# finish_site_log fuegt die Teile beim Abschluss in Target-Reihenfolge zusammen,
+# das veroeffentlichte build.log.gz sieht also aus wie immer.
 get_site_log_filename ()
 {
   local TEMPLATE_NAME="$1"
@@ -421,43 +424,98 @@ get_site_log_filename ()
   fi
 }
 
-# Fuegt die Logs der einzelnen Bauschritte einer Domain zu build.log zusammen,
-# in der Reihenfolge der Targetliste - also so, wie es unter BUILD_ORDER=domain
-# schon immer aussah.
+# Wohin die Logs einer Domain gepackt wandern: in ihr Site-Verzeichnis unter
+# images/running. Das ueberlebt einen Abbruch und den --resume, und waehrend des
+# Laufs sind die Logs fertiger Targets dort schon zu sehen.
+get_site_log_dir ()
+{
+  SITE_LOG_DIR="$SANDBOX_DIR/images/running/$1/$2/site"
+}
+
+# Packt das Log eines durchgelaufenen Bauschritts sofort weg, als
+# site/build-<target>.log.gz. Aufgerufen nur nach erfolgreichem make und vor
+# state_mark: ein als gebaut vermerktes Target hat damit immer sein Log.
 #
-# Ueber eine temporaere Datei und mv, und die Einzelteile erst danach weg:
-# bricht der Lauf in finalize ab und wird fortgesetzt, sind die Teile schon
-# zusammengefuegt und weg, und ein zweites Zusammenfuegen wuerde das fertige
-# build.log sonst mit einer leeren Datei ueberschreiben. Deshalb auch der
-# fruehe Ausstieg, wenn es nichts zusammenzufuegen gibt.
+# Frueher lag es bis zum Laufende ungepackt in assembled/ und war bei einem
+# --resume weg, weil generate_all_site_configs assembled/ mit rm -rf raeumt.
 #
-# Bekannter Makel, nicht von hier: generate_all_site_configs raeumt assembled/
-# mit rm -rf, und das laeuft auch beim --resume. Die Logs der Targets, die ein
-# abgebrochener Lauf schon gebaut hatte, sind danach weg - das war mit dem einen
-# build.log vorher genauso.
-merge_target_logs ()
+# Ueber .tmp und mv: ein Abbruch mitten im Packen hinterlaesst kein halbes
+# .gz, das spaeter als vollstaendig durchginge. Wird das Target nach einem
+# Abbruch zwischen mv und state_mark neu gebaut, ersetzt das neue Log das alte.
+store_target_log ()
 {
   local TEMPLATE_NAME="$1"
   local SITE_CODE="$2"
-  local DIR="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
+  local TARGET="$3"
+  local SITE_LOG_DIR
+  get_site_log_dir "$TEMPLATE_NAME" "$SITE_CODE"
+  local ROH="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/build-$TARGET.log"
+  local GZ="$SITE_LOG_DIR/build-$TARGET.log.gz"
+
+  [ -f "$ROH" ] || return 0
+  mkdir --parents -- "$SITE_LOG_DIR"
+  gzip --best --stdout -- "$ROH" > "$GZ.tmp"
+  mv -- "$GZ.tmp" "$GZ"
+  rm -f -- "$ROH"
+}
+
+# Setzt beim Abschluss einer Domain site/build.log.gz zusammen: die gepackten
+# Logs der Targets in der Reihenfolge der Targetliste - so, wie es unter
+# BUILD_ORDER=domain schon immer aussah - und dahinter das Log von finalize.
+# Aufgerufen, wenn finalize_site durch ist, also vollstaendig.
+#
+# Einmal entpackt und als Ganzes neu gepackt statt die .gz einfach
+# aneinanderzuhaengen. Das Aneinanderhaengen waere gueltiges gzip, und zcat,
+# zgrep und zless kaemen damit zurecht, aber nicht jedes Werkzeug liest ueber
+# das erste Member hinaus. Die paar Sekunden sind es wert.
+#
+# Wiederholbar: die Teile bleiben liegen, bis state_mark finalize geschrieben
+# ist (drop_target_log_parts). Bricht der Lauf dazwischen ab, entsteht
+# build.log.gz beim naechsten finalize einfach neu aus denselben Teilen. Gibt
+# es keine Teile, aber schon ein build.log.gz, bleibt dessen Inhalt vorn stehen.
+finish_site_log ()
+{
+  local TEMPLATE_NAME="$1"
+  local SITE_CODE="$2"
+  local SITE_LOG_DIR
+  get_site_log_dir "$TEMPLATE_NAME" "$SITE_CODE"
+  local GZ="$SITE_LOG_DIR/build.log.gz"
+  local FIN="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/build.log"
   local TARGET
-  local -i TEILE=0
+  local -a TEILE=()
 
   for TARGET in "${BUILD_TARGETS[@]}"; do
-    [ -f "$DIR/build-$TARGET.log" ] && TEILE+=1
+    [ -f "$SITE_LOG_DIR/build-$TARGET.log.gz" ] && TEILE+=( "$SITE_LOG_DIR/build-$TARGET.log.gz" )
   done
-  (( TEILE > 0 )) || return 0
+  if (( ${#TEILE[@]} == 0 )) && [ -f "$GZ" ]; then
+    TEILE=( "$GZ" )
+  fi
+
+  mkdir --parents -- "$SITE_LOG_DIR"
+  {
+    (( ${#TEILE[@]} == 0 )) || gzip --decompress --stdout -- "${TEILE[@]}"
+    [ ! -f "$FIN" ] || cat -- "$FIN"
+  } | gzip --best > "$GZ.tmp"
+  mv -- "$GZ.tmp" "$GZ"
+}
+
+# Raeumt nach dem Abschluss einer Domain die Einzelteile weg: die gepackten
+# Target-Logs, jetzt in build.log.gz enthalten, und das ungepackte Log von
+# finalize in assembled/. Erst nach state_mark finalize, siehe finish_site_log;
+# und noch einmal, wenn eine abgeschlossene Domain uebersprungen wird, falls ein
+# Abbruch genau zwischen state_mark und hier lag.
+drop_target_log_parts ()
+{
+  local TEMPLATE_NAME="$1"
+  local SITE_CODE="$2"
+  local SITE_LOG_DIR
+  get_site_log_dir "$TEMPLATE_NAME" "$SITE_CODE"
+  local TARGET
 
   for TARGET in "${BUILD_TARGETS[@]}"; do
-    if [ -f "$DIR/build-$TARGET.log" ]; then
-      cat -- "$DIR/build-$TARGET.log"
-    fi
-  done > "$DIR/build.log.tmp"
-  mv -- "$DIR/build.log.tmp" "$DIR/build.log"
-
-  for TARGET in "${BUILD_TARGETS[@]}"; do
-    rm -f -- "$DIR/build-$TARGET.log"
+    rm -f -- "$SITE_LOG_DIR/build-$TARGET.log.gz"
   done
+  rm -f -- "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/build.log"
 }
 # Default values for every setting that build.conf may override. They are
 # defined here so that build.sh still runs if no configuration file exists.
@@ -492,7 +550,7 @@ set_config_defaults ()
 
   # Platzschaetzung vor dem Lauf, siehe space_check und build.conf.
   SPACE_CHECK=true
-  SPACE_UNIT_MB=300
+  SPACE_UNIT_MB=250
   SPACE_TARGET_MB=50
   SPACE_WORKER_BASE_MB=3000
   SPACE_WORKER_DOMAIN_MB=200
@@ -630,7 +688,7 @@ ovl_selftest ()
 # make, patch) fallen sofort auf, aber gerade die des Endes nicht. esign ruft
 # /usr/bin/ecdsasign mit festem Pfad auf, und zwar in finalize_site - also nach
 # dem letzten Target einer Domain, im Volllauf Stunden nach dem Start. gzip
-# braucht compress_build_logs, das als allerletzter Schritt laeuft.
+# braucht erst store_target_log, nach dem ersten fertig gebauten Target.
 #
 # Gesammelt statt beim ersten Treffer abgebrochen: wer drei Werkzeuge
 # nachinstallieren muss, soll das nicht in drei Anlaeufen erfahren.
@@ -1598,6 +1656,10 @@ finalize_site ()
     RSYNC_EXCLUDE_ARGS+=( --exclude "$PATTERN" )
   done
 
+  # Ohne die Logs: das von finalize wird gerade noch geschrieben, und
+  # build.log.gz setzt run_finalize_step erst danach zusammen.
+  RSYNC_EXCLUDE_ARGS+=( --exclude '/build.log' --exclude '/build-*.log' )
+
   rsync --archive "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/" "${RSYNC_EXCLUDE_ARGS[@]}" "$SITE_IMAGE_DIR"
 
   # Keep the build script and all three configurations next to the images, so
@@ -1613,18 +1675,14 @@ finalize_site ()
   fi
 
   write_build_info "$SITE_IMAGE_DIR" "$RELBRANCH" "$TEMPLATE_NAME" "$SITE_CODE"
-
-  # Das Buildlog bleibt hier ungepackt liegen. Gepackt wird erst am Ende des
-  # ganzen Laufs, in compress_build_logs(). Grund: solange finalize_site das Log
-  # selbst packte, durfte es nur aufgerufen werden, wenn zu dieser Domain
-  # garantiert nichts mehr geschrieben wird - unter BUILD_ORDER=target haengen
-  # spaetere Targets aber noch an dasselbe Log an, und das waere dann schon
-  # gepackt. Ohne diese Abhaengigkeit ist der Abschluss einer Domain unter jeder
-  # Reihenfolge gefahrlos vorziehbar.
 }
 
 
-# Packt die Buildlogs aller Domains, einmal am Ende des Laufs.
+# Rueckfallebene am Ende des Laufs: packt ein ungepacktes site/build.log, falls
+# noch eines herumliegt. Im Normalfall gibt es keines mehr - die Logs werden
+# gepackt, sobald ihr Schritt durch ist (store_target_log, finish_site_log).
+# Uebrig bleiben kann eines nur aus einem Lauf, den ein aelteres build.sh
+# begonnen hat und dieses mit --resume fortsetzt.
 #
 # Mit V=s sind das je Domain mehrere Dutzend MB, die sich um etwa Faktor 25
 # packen lassen. gzip statt xz, weil zgrep, zcat und zless ueberall da sind -
@@ -1637,15 +1695,13 @@ compress_build_logs ()
 
   for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
     LOG="$SANDBOX_DIR/images/running/${ALL_SITE_TEMPLATE_NAMES[$site_index]}/${ALL_SITE_CODES[$site_index]}/site/build.log"
-    # Bei einem fortgesetzten Lauf kann eine Domain ihr Log schon gepackt
-    # haben - dann liegt nur noch die .gz-Datei da und es gibt nichts zu tun.
     if [ -f "$LOG" ]; then
       gzip --force --best -- "$LOG"
       GEPACKT=$(( GEPACKT + 1 ))
     fi
   done
 
-  echo "Compressed $GEPACKT build log(s)."
+  (( GEPACKT == 0 )) || echo "Compressed $GEPACKT left-over build log(s)."
 }
 
 # Appends one record to the timing CSV. The file is meant for comparing build
@@ -1775,10 +1831,10 @@ run_finalize_step ()
 
   if state_has finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"; then
     echo "Skipping site code ${ALL_SITE_CODES[$site_index]}: already finalized."
+    drop_target_log_parts "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"
     return
   fi
 
-  merge_target_logs      "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
   status_set finalize - "${ALL_SITE_CODES[$site_index]}"
   get_site_log_filename  "${ALL_SITE_TEMPLATE_NAMES[$site_index]}"  "${ALL_SITE_CODES[$site_index]}"
 
@@ -1792,10 +1848,14 @@ run_finalize_step ()
                   "${ALL_SITE_CODES[$site_index]}"
   } 2>&1 | timestamp_lines | tee --append -- "$LOG_FILENAME"
 
+  # Hinter der Pipeline: jetzt schreibt niemand mehr in das Log dieser Domain.
+  finish_site_log "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"
+
   read_uptime_as_integer
   log_build_time finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}" "-" "$(( UPTIME - STEP_UPTIME_BEGIN ))"
 
   state_mark finalize "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"
+  drop_target_log_parts "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" "${ALL_SITE_CODES[$site_index]}"
 }
 
 run_build_step ()
@@ -1838,6 +1898,7 @@ run_build_step ()
 
   # Erst hier, nach der Pipeline. Mit errexit und pipefail kommt der Ablauf nur
   # bis hierher, wenn make durchgelaufen ist.
+  store_target_log "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET"
   state_mark build "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET"
 
   # Die Bauzeit fuer build-info.txt. Nach state_mark, damit nur gezaehlt wird,
@@ -1968,9 +2029,8 @@ collector_stop ()
 #
 #   je Domain x Target  SPACE_UNIT_MB   Images (~185 MB im Mittel ueber 22
 #                                       Targets), das Paketverzeichnis (je
-#                                       site_code, ~35 MB) und das Buildlog,
-#                                       das bis zum Laufende zweimal ungepackt
-#                                       liegt (~45 MB bei V=s)
+#                                       site_code, ~35 MB), das gepackte
+#                                       Buildlog (~1 MB) und Luft
 #   je Target, einmal   SPACE_TARGET_MB die eingesammelten opkg-Feeds
 #   je Worker           SPACE_WORKER_BASE_MB + SPACE_WORKER_DOMAIN_MB je
 #                                       Domain: das upperdir eines Workers
@@ -2122,7 +2182,7 @@ start_worker ()
   # Verzeichnis als cwd.
   #
   # Die Targetliste wird vollstaendig durchgereicht, damit BUILD_TARGETS im
-  # Worker dieselbe ist - sie geht in merge_target_logs und in die
+  # Worker dieselbe ist - sie geht in das Zusammensetzen der Logs und in die
   # Fingerabdruecke ein.
   (
     cd -- "$SANDBOX_DIR"
@@ -2352,7 +2412,6 @@ build_all_images ()
   status_clear
   collector_stop uebernehmen
 
-  # Erst jetzt packen: ab hier schreibt niemand mehr in ein Buildlog.
   compress_build_logs
 
   # Der Lauf ist durch, die Zustandsdatei hat ihren Zweck erfuellt. Sie wird
