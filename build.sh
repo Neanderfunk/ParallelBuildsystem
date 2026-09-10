@@ -470,6 +470,67 @@ set_config_defaults ()
   SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
 }
 
+# Fingerabdruck des golden tree: alles, was bestimmt, WAS im Baum kompiliert
+# steht - unabhaengig davon, welche Domains daraus gebaut werden.
+#
+# Er wird aus den EINGABEN gebildet, vor prepare, und nicht aus dem fertigen
+# Baum. Der naheliegende andere Weg - immer git reset und die Patches
+# anwenden, dann ueber den Baum hashen - taugt nicht: beides setzt die
+# Aenderungszeiten aller gepatchten Dateien neu, auch bei identischem Inhalt,
+# und OpenWrt entscheidet teils an Aenderungszeiten ueber Neubauten. Ein
+# golden tree, der bei jedem Lauf angefasst wird, ist keiner mehr. Passt der
+# Fingerabdruck, bleibt der Baum deshalb komplett unberuehrt.
+#
+# Das ist nur sicher, wenn er JEDE Eingabe erfasst. Im Zweifel lieber zu grob:
+# ein ueberfluessiger Neubau kostet so viel wie heute jeder Lauf, eine
+# vergessene Eingabe dagegen erzeugt stillschweigend Images aus altem
+# Quellstand.
+#
+#   origin/<gluonbranch>   Gluons eigene modules-Datei, also OpenWrt,
+#                          packages, routing und gluon samt ihren Pins
+#   templates/common/      die Site-modules (Feed-Pins neanderfunk, ffac,
+#                          community), image-customization.lua, site.mk,
+#                          prepare.sh. Bewusst zu grob: site.conf und i18n
+#                          gehen nur in gluon-site ein, das ohnehin je Domain
+#                          entsteht, loesen hier aber trotzdem einen Neubau aus.
+#   patches/               alle Patch-Inhalte
+#   Targets, Geraete,      welche Geraete und Pakete ueberhaupt gebaut werden
+#   BROKEN
+#   Host-Compiler, glibc   die Host-Werkzeuge im Baum sind dagegen gelinkt;
+#                          nach einem Upgrade liefen sie auf einem Stand
+#                          weiter, den niemand bewusst gewaehlt hat
+#
+# Nicht erfasst: sites-Datei und Domainauswahl (nur gluon-site), build.sh
+# selbst, und die Laufwerte SBRANCH, DATE_SUFFIX, GLUON_SITE_VERSION, WORKERS.
+#
+# Editor-Reste (SITE_COPY_EXCLUDES, etwa modules~) bleiben aussen vor, sonst
+# baute ein gespeicherter Editorpuffer den golden tree neu.
+golden_fingerprint ()
+{
+  local GLUONBRANCH="$1"
+  local -a AUSSCHLUSS=()
+  local MUSTER
+
+  for MUSTER in "${SITE_COPY_EXCLUDES[@]}"; do
+    AUSSCHLUSS+=( ! -name "$MUSTER" )
+  done
+
+  {
+    echo "gluon=$(git -C "$GLUON_DIR" rev-parse --verify "origin/$GLUONBRANCH^{commit}")"
+    # Sortiert: die Reihenfolge in targets.conf aendert nichts daran, was
+    # kompiliert wird, und soll keinen Neubau ausloesen.
+    echo "targets=$(printf '%s\n' "${BUILD_TARGETS[@]}" | sort | tr '\n' ' ')"
+    echo "devices=$GLUONDEVICES"
+    echo "broken=$BROKEN"
+    echo "cc=$(gcc --version 2>/dev/null | head -n 1)"
+    echo "libc=$(ldd --version 2>/dev/null | head -n 1)"
+    # Sortiert, damit die Reihenfolge im Dateisystem keine Rolle spielt.
+    ( cd "$SANDBOX_DIR" \
+        && find patches templates/common -type f "${AUSSCHLUSS[@]}" -print0 \
+         | sort -z | xargs -0 sha256sum )
+  } | sha256sum | cut -d' ' -f1
+}
+
 # Raeumt ein Overlay-Arbeitsverzeichnis weg. overlayfs legt darin work/work
 # mit Modus 000 an, ohne chmod scheitert das rm schon beim eigenen Benutzer.
 ovl_discard_dir ()
@@ -2126,6 +2187,11 @@ SITE_SECONDS_FILE="$SANDBOX_DIR/images/running/.site-seconds"
 # Neben dem Gluon-Baum, nicht darin - sonst saehe jedes Overlay die anderen als
 # Teil seines lowerdir.
 OVL_DIR="$SANDBOX_DIR/.overlays"
+
+# Fingerabdruck des golden tree, siehe golden_fingerprint. Geschrieben erst,
+# wenn der golden tree vollstaendig gebaut ist - ein abgebrochener Aufbau
+# hinterlaesst also keinen, und der naechste Lauf baut ihn neu.
+GOLDEN_FP_FILE="$OVL_DIR/golden.fingerprint"
 
 # Fuer build-info.txt: Startzeitpunkt und Aufruf festhalten, bevor die
 # Argumente durch "shift" verlorengehen.
