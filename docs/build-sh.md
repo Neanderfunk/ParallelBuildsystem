@@ -206,6 +206,7 @@ Später Geladenes gewinnt.
    Lauf     26091021bro -> images/images-1789067658  (parallel, 6 Worker)
    Dauer    2 h 04 min  (prepare 21 min, je Domain im Mittel 20 min)
    Umfang   5 Domains x 6 Targets = 30 Bauschritte
+   Worker   4.6 Erl von 6  (Parallelphase 41 min, 24 Bauschritte)
    Images   … (sysupgrade …, factory …, other …)
    Groesse  …: Images …, Pakete …, opkg …, Logs …
    Platte   … GB frei unter <Checkout>
@@ -361,7 +362,7 @@ build.sh (Hauptprozess, eigene UID)
 
 - `scripts/buildcollect.py` läuft neben dem Lauf, 1 Probe/s:
   aktive Kerne, iowait, Plattenauslastung, Phase
-- Ausgewertet **nur** Proben bei voller Besetzung im Imagebau
+- Ausgewertet **nur** Proben, in denen alle Worker im Imagebau belegt sind
   (Hoch-/Auslaufen sagt nichts über freie Kapazität), mindestens 300 Proben
 - Regeln:
 
@@ -372,6 +373,11 @@ build.sh (Hauptprozess, eigene UID)
 | sonst / zu wenig Proben | unverändert |
 
 - gedämpft ±1 je Lauf, begrenzt auf 1 … Kerne/2
+- dazu der **Worker-Verkehr in Erlang** (Einheit nach A. K. Erlang,
+  Telefonvermittlung): die mittlere Zahl gleichzeitig belegter Worker über die
+  Parallelphase, in `metrics/empfehlung.txt` als `worker_erlang`. Der Kasten am
+  Ende des Laufs rechnet ihn unabhängig aus der Zeiten-CSV nach (Schrittzeit
+  ÷ Wandzeit). Erster Lauf auf wir-horst: 4,6 Erl bei 6 Workern
 - nur ein **erfolgreicher** Lauf setzt `metrics/empfehlung.txt`
   (ein an Speichermangel gestorbener Lauf könnte sonst „mehr“ empfehlen)
 - `WORKERS=auto` liest sie; ohne Datei `WORKERS_AUTO_START`

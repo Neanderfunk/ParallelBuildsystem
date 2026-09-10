@@ -2270,6 +2270,11 @@ start_worker ()
 # zu Ende gebracht: ihre Targets sind dann per state_mark gesichert, und ein
 # --resume baut nur noch das Gescheiterte. Sofort alle abzubrechen verwarf
 # die Arbeit aller anderen.
+# Anfang und Ende der Parallelphase (Epoch), fuer den Worker-Verkehr in
+# Erlang im Kasten am Ende, siehe print_run_summary.
+PAR_START_EPOCH=""
+PAR_END_EPOCH=""
+
 run_parallel ()
 {
   local -a WARTESCHLANGE=( "${BUILD_TARGETS[@]}" )
@@ -2278,6 +2283,7 @@ run_parallel ()
   local PID TARGET RC
 
   echo "Parallelbetrieb: ${#WARTESCHLANGE[@]} Targets, bis zu $WORKERS Worker, ${WORKER_START_DELAY}s Versatz beim Hochfahren."
+  PAR_START_EPOCH="$(date +%s)"
 
   while (( ${#WARTESCHLANGE[@]} > 0 || ${#WORKER_LAUFEND[@]} > 0 )); do
 
@@ -2319,6 +2325,8 @@ run_parallel ()
       # Worker kam.
     fi
   done
+
+  PAR_END_EPOCH="$(date +%s)"
 
   if (( ${#GESCHEITERT[@]} > 0 )); then
     abort "${#GESCHEITERT[@]} Target(s) gescheitert: ${GESCHEITERT[*]}. Die uebrigen sind gebaut und gesichert; mit --resume wird nur noch das Gescheiterte gebaut."
@@ -2363,7 +2371,7 @@ build_parallel ()
   # Der Hauptprozess wartet jetzt nur noch auf die Worker und meldet sich ab.
   # Blieb seine Statusdatei auf "golden" stehen, verwarf der Collector jede
   # Probe des Parallelbetriebs (Bedingung: niemand in golden/prepare) - im
-  # ersten Lauf auf wir-horst gab es so 0 von 6887 Proben bei voller Besetzung.
+  # ersten Lauf auf wir-horst gab es so 0 von 6887 Proben mit allen Workern belegt.
   status_clear
 
   run_parallel
@@ -2409,6 +2417,18 @@ print_run_summary ()
   local -i KB_IMG=$(( KB_ALL - KB_PKG - KB_OPKG - KB_LOG ))
   kb () { awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1f GB", k / 1048576; else if (k >= 1024) printf "%.0f MB", k / 1024; else printf "%d KB", k }'; }
 
+  # Worker-Verkehr in Erlang: Summe der Schrittzeiten, die in der
+  # Parallelphase fertig wurden (strikt nach ihrem Beginn - der letzte Schritt
+  # des golden tree endet oft in derselben Sekunde), durch deren Wandzeit - die mittlere Zahl
+  # gleichzeitig belegter Worker (A. K. Erlang, Telefonvermittlung).
+  local ERL=""
+  if [ -n "$PAR_START_EPOCH" ] && [ -n "$PAR_END_EPOCH" ] && [ -f "$BUILD_TIMES_FILE" ] \
+     && (( PAR_END_EPOCH > PAR_START_EPOCH )); then
+    ERL=$(awk -F, -v r="$BUILD_RUN_ID" -v a="$PAR_START_EPOCH" -v w="$(( PAR_END_EPOCH - PAR_START_EPOCH ))" -v n="$WORKERS" \
+      '$1 == r && $5 == "build" && $3 > a { s += $9; k++ }
+       END { if (k) printf "%.1f Erl von %d  (Parallelphase %d min, %d Bauschritte)", s / w, n, w / 60, k }' "$BUILD_TIMES_FILE")
+  fi
+
   local FREI
   FREI="$(disk_free_mb)"
 
@@ -2418,6 +2438,7 @@ print_run_summary ()
   printf ' %-8s %s\n' "Lauf" "$SBRANCH -> images/${DIR##*/}  ($MODUS)"
   printf ' %-8s %s\n' "Dauer" "$ZEIT"
   printf ' %-8s %s\n' "Umfang" "$D Domains x $T Targets = $(( D * T )) Bauschritte"
+  [ -n "$ERL" ] && printf ' %-8s %s\n' "Worker" "$ERL"
   printf ' %-8s %s\n' "Images" "$(( N_SYS + N_FAC + N_OTH )) (sysupgrade $N_SYS, factory $N_FAC, other $N_OTH)"
   printf ' %-8s %s\n' "Groesse" "$(kb "$KB_ALL"): Images $(kb "$KB_IMG"), Pakete $(kb "$KB_PKG"), opkg $(kb "$KB_OPKG"), Logs $(kb "$KB_LOG")"
   [ -n "$FREI" ] && printf ' %-8s %s\n' "Platte" "$(( FREI / 1024 )) GB frei unter $SANDBOX_DIR"
