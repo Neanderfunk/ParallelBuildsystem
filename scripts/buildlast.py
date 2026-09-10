@@ -3,19 +3,28 @@
 
   python3 buildlast.py <pfad-im-buildbaum> [dauer] [schwelle]
 
-Wartet, bis mindestens <schwelle> Kerne aktiv sind (Standard 2), misst dann
-<dauer> Sekunden (Standard 900) und fasst zusammen. Strg-C beendet frueher,
-die Zusammenfassung kommt trotzdem. Braucht nur python3 und /proc.
+Wartet, bis Gluon tatsaechlich baut, misst dann <dauer> Sekunden
+(Standard 900) und fasst zusammen. Strg-C beendet frueher, die
+Zusammenfassung kommt trotzdem. Braucht nur python3 und /proc.
 
-Die Wartephase hat einen Grund: die prepare-Phase eines Gluon-Laufs
-(make update, feeds) laeuft mit gut einem Kern und wuerde den Schnitt
-verfaelschen. Gemessen werden soll die Bauphase.
+Erkannt wird die Bauphase am laufenden Prozess "make GLUON_TARGET=...",
+nicht an einer Lastschwelle. Eine Schwelle taugt dafuer nicht: die
+prepare-Phase (make update, Feeds, Collecting package info) laeuft mit gut
+einem Kern, erzeugt aber IO-Spitzen und loest damit jede brauchbare
+Schwelle aus - gemessen wuerde dann die falsche Phase. Der Unterschied
+faellt hinterher nur auf, wenn man darauf achtet, dass die aktiven Kerne
+nie ueber 2 steigen; ein Imagebau hat immer kurze Vollastspitzen.
+
+Mit --last statt Prozesserkennung wird auf <schwelle> aktive Kerne
+gewartet (Notnagel, falls der Prozess anders heisst).
 """
 import os, sys, time, subprocess, re
 
-pfad     = sys.argv[1] if len(sys.argv) > 1 else "."
-dauer    = float(sys.argv[2]) if len(sys.argv) > 2 else 900.0
-schwelle = float(sys.argv[3]) if len(sys.argv) > 3 else 2.0
+argv     = [a for a in sys.argv[1:] if a != "--last"]
+per_last = "--last" in sys.argv
+pfad     = argv[0] if len(argv) > 0 else "."
+dauer    = float(argv[1]) if len(argv) > 1 else 900.0
+schwelle = float(argv[2]) if len(argv) > 2 else 2.0
 INTERVALL, KERNE = 1.0, os.cpu_count()
 
 def blockgeraet(p):
@@ -77,18 +86,35 @@ def probe(c0, d0, t0):
         lese = schreib = iops = util = 0.0
     return (aktiv, iow, lese, schreib, iops, util), c1, d1, t1
 
-print("Geraet %s, %d Kerne. Warte auf Last (>%.1f aktive Kerne) ..."
-      % (DEV or "-", KERNE, schwelle))
+def baut():
+    """Laeuft gerade ein Gluon-Imagebau? Erkannt am make-Aufruf, den build.sh
+    je Domain und Target absetzt."""
+    try:
+        return subprocess.run(["pgrep", "-f", "make GLUON_TARGET="],
+                              capture_output=True).returncode == 0
+    except FileNotFoundError:
+        return False
+
+if per_last:
+    print("Geraet %s, %d Kerne. Warte auf Last (>%.1f aktive Kerne) ..."
+          % (DEV or "-", KERNE, schwelle))
+else:
+    print("Geraet %s, %d Kerne. Warte auf die Bauphase (make GLUON_TARGET=...) ..."
+          % (DEV or "-", KERNE))
 c0, d0, t0 = cpu(), disk(), time.time()
 try:
     while True:
         time.sleep(INTERVALL)
         pr, c0, d0, t0 = probe(c0, d0, t0)
-        if pr and pr[0] >= schwelle:
-            print("Last erkannt (%.1f Kerne aktiv), messe %.0f s ..." % (pr[0], dauer))
+        if per_last:
+            if pr and pr[0] >= schwelle:
+                print("Last erkannt (%.1f Kerne aktiv), messe %.0f s ..." % (pr[0], dauer))
+                break
+        elif baut():
+            print("Bauphase erkannt, messe %.0f s ..." % dauer)
             break
 except KeyboardInterrupt:
-    print("Abgebrochen, ohne Last keine Messung.")
+    print("Abgebrochen, ohne Bauphase keine Messung.")
     sys.exit(1)
 
 proben, ende = [], time.time() + dauer
