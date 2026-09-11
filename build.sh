@@ -993,7 +993,14 @@ determine_sbranch ()
 
   esac
 
-  echo "Firmware version (SBRANCH): $SBRANCH"
+  # Bei --resume gilt der Wert aus der Zustandsdatei (state_resume nennt ihn);
+  # der hier frisch berechnete wuerde sonst eine Version anzeigen, die gar
+  # nicht gebaut wird.
+  if [ "$RESUME" = true ]; then
+    echo "Firmware version (SBRANCH): taken from the interrupted run (--resume), see below."
+  else
+    echo "Firmware version (SBRANCH): $SBRANCH"
+  fi
 }
 
 # Copies GLUON_TARGETS into ENABLED_TARGETS, dropping the entries that are
@@ -1270,6 +1277,65 @@ build_fingerprint ()
   sha256sum <<< "$LISTING" | cut -d" " -f1
 }
 
+# Dieselben Eingaben wie build_fingerprint, aber als Liste je Posten, damit
+# sich bei einem abgelehnten --resume sagen laesst, WAS sich geaendert hat.
+# Die Konfigurationsdateien stehen hier nur mit ihrem Hash, nicht mit Inhalt:
+# die Liste liegt in images/running/, und das ist je nach Host ueber einen
+# Webserver lesbar (build.local.conf gehoert dort nicht hin).
+# build_fingerprint selbst bleibt unveraendert, sonst liesse sich ein mit
+# einem aelteren build.sh unterbrochener Lauf nicht mehr fortsetzen.
+fingerprint_details ()
+{
+  echo "order=$BUILD_ORDER"
+  echo "targets=${BUILD_TARGETS[*]}"
+  echo "domains=${ALL_SITE_TEMPLATE_NAMES[*]}"
+  local FILE
+  for FILE in "$BUILD_CONF_FILE" \
+              "$SANDBOX_DIR/build.local.conf" \
+              "$TARGETS_CONF_FILE" \
+              "$DOMAINS_CONF_FILE" \
+              "$SITES_FILE"; do
+    if [ -f "$FILE" ]; then
+      echo "datei=$(basename -- "$FILE") $(sha256sum -- "$FILE" | cut -d" " -f1)"
+    fi
+  done
+  find -L "$SANDBOX_DIR/templates" "$SANDBOX_DIR/patches" \
+       -type f  ! -name '*~'  -print0 \
+    | sort --zero-terminated \
+    | xargs --null --no-run-if-empty sha256sum \
+    | sed "s|  $SANDBOX_DIR/|  |"
+}
+
+# Vergleicht die gespeicherte Detailliste mit der aktuellen und gibt die
+# Unterschiede aus, hoechstens 20 Zeilen.
+explain_fingerprint_change ()
+{
+  local OLD="$1"
+  if [ ! -f "$OLD" ]; then
+    echo "  (No details: the run was started by an older build.sh without .build-fingerprint.)"
+    return 0
+  fi
+  fingerprint_details | awk -v old="$OLD" '
+    function key(l) { if (l ~ /^[0-9a-f]{64}  /) return substr(l, 67)
+                      if (l ~ /^datei=/) { split(l, a, " "); return a[1] }
+                      return substr(l, 1, index(l, "=") - 1) }
+    function show(k) { return (k ~ /^datei=/) ? substr(k, 7) : k }
+    function val(l) { if (l ~ /^[0-9a-f]{64}  /) return substr(l, 1, 64)
+                      if (l ~ /^datei=/) { split(l, a, " "); return a[2] }
+                      return substr(l, index(l, "=") + 1) }
+    BEGIN { while ((getline l < old) > 0) { k = key(l); o[k] = val(l); ord[++n] = k } }
+    { k = key($0); v = val($0); seen[k] = 1
+      if (!(k in o))       out[++m] = "  added:   " show(k)
+      else if (o[k] != v) {
+        if (k ~ /^(order|targets|domains)$/) out[++m] = "  " k ": " o[k] " -> " v
+        else out[++m] = "  changed: " show(k)
+      } }
+    END { for (i = 1; i <= n; i++) if (!(ord[i] in seen)) out[++m] = "  removed: " show(ord[i])
+          for (i = 1; i <= m && i <= 20; i++) print out[i]
+          if (m > 20) print "  ... and " (m - 20) " more"
+          if (m == 0) print "  (No difference in the detail list, although the fingerprint differs - should not happen.)" }'
+}
+
 state_init ()
 {
   local RUNNING_DIR="$SANDBOX_DIR/images/running"
@@ -1291,6 +1357,7 @@ state_init ()
     echo "fingerprint=$FINGERPRINT"
     echo "started=$(date --iso-8601=seconds)"
   } > "$STATE_FILE"
+  fingerprint_details > "$RUNNING_DIR/.build-fingerprint"
   sync
 }
 
@@ -1313,6 +1380,8 @@ state_resume ()
   NEW_FINGERPRINT="$(build_fingerprint)"
 
   if [ "$OLD_FINGERPRINT" != "$NEW_FINGERPRINT" ]; then
+    echo "What changed since the interrupted run:"
+    explain_fingerprint_change "$RUNNING_DIR/.build-fingerprint"
     abort "This run cannot be resumed: the inputs have changed since it was interrupted - the templates, the patches, one of the configuration files, or the target or domain list. Images built from two different sources do not belong under one manifest. Start afresh with --restart (it removes \"$RUNNING_DIR\" and reports what gets thrown away), or remove the directory by hand."
   fi
 
