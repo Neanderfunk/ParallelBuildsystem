@@ -744,15 +744,6 @@ preflight_check ()
       || FEHLT+=( "Signaturschluessel buildkeys/$SIGNKEY_FILE (SIGNKEY_FILE)" )
   fi
 
-  # Der Gluon-Baum. build.sh klont ihn nicht selbst; ohne ihn scheiterte der
-  # Lauf erst nach der Site-Erzeugung an einem pushd. Der Branch steht in
-  # Spalte 2 der Sites-Datei.
-  if ! git -C "$SANDBOX_DIR/gluon" rev-parse --git-dir >/dev/null 2>&1; then
-    local GB=""
-    [ -f "$SITES_FILE" ] && GB="$(awk '!/^[[:space:]]*#/ && NF { print $2; exit }' "$SITES_FILE")"
-    FEHLT+=( "Gluon-Baum $SANDBOX_DIR/gluon (git). Einmalig: git clone -b ${GB:-<Gluon-Branch aus Spalte 2 der Sites-Datei>} https://github.com/freifunk-gluon/gluon $SANDBOX_DIR/gluon" )
-  fi
-
   # Der Collector ist ein Python-Skript. Ohne python3 ohne Metriken.
   if [ "$METRICS" = true ] && ! command -v python3 >/dev/null 2>&1; then
     METRICS=false
@@ -822,6 +813,32 @@ preflight_check ()
   fi
 
   echo "Vorabpruefung bestanden."
+}
+
+# Legt den Gluon-Baum an, wenn es ihn noch nicht gibt: ein voller git clone
+# (kein --depth - Gluon bildet seine Version per git describe aus den Tags) des
+# Branches aus Spalte 2 der Sites-Datei. Quelle GLUON_REPO, Vorgabe das
+# Gluon-Repository auf GitHub. Ein vorhandener Baum bleibt unberuehrt; auf den
+# richtigen Stand bringt ihn wie bisher GITRESET.
+#
+# Nach preflight_check, dann ist git sicher da. Frueher scheiterte ein Lauf
+# ohne gluon/ erst nach der Site-Erzeugung an einem pushd.
+ensure_gluon_tree ()
+{
+  local DIR="$SANDBOX_DIR/gluon"
+  git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1 && return 0
+
+  local REPO="${GLUON_REPO:-https://github.com/freifunk-gluon/gluon.git}"
+  local BRANCH
+  BRANCH="$(awk '!/^[[:space:]]*#/ && NF { print $2; exit }' "$SITES_FILE")"
+  [ -n "$BRANCH" ] || abort "No Gluon tree at \"$DIR\", and no Gluon branch found in column 2 of \"$SITES_FILE\" to clone it from."
+  if [ -e "$DIR" ]; then
+    abort "\"$DIR\" exists but is not a git checkout. Remove it; build.sh then clones Gluon ($BRANCH) itself."
+  fi
+
+  echo "No Gluon tree yet - cloning $REPO (branch $BRANCH) into \"$DIR\" ..."
+  git clone --branch "$BRANCH" -- "$REPO" "$DIR" \
+    || abort "Cloning Gluon failed (git clone --branch $BRANCH $REPO). Check the network, or clone it by hand into \"$DIR\"."
 }
 
 # Prints the given path as an absolute one, without requiring the file to exist
@@ -3096,6 +3113,7 @@ fi
 # Nach den Konfigurationsdateien, weil die Pruefung von deren Werten abhaengt
 # (SIGNKEY_FILE), und vor allem anderen, damit ein Mangel nichts mehr kostet.
 preflight_check
+ensure_gluon_tree
 
 # Syntaxcheck der Lua-Dateien in den Templates, dauert zwei Sekunden. Ein
 # Tippfehler in der site.conf faellt damit hier auf und nicht erst nach

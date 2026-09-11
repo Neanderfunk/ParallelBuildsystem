@@ -147,6 +147,10 @@ Später Geladenes gewinnt.
    - Jeder solche Rückfall steht am Ende des Laufs noch einmal im Log
      („Dieser Lauf lief NICHT wie konfiguriert“), wie auch der Rückfall der
      Platzprüfung
+   - danach `ensure_gluon_tree`: fehlt `gluon/`, wird es geklont – voll (Tags
+     für die Gluon-Version), Branch aus Spalte 2 der Sites-Datei, Quelle
+     `GLUON_REPO` (Vorgabe GitHub). Ein vorhandener Baum bleibt, wie er ist;
+     auf Stand bringt ihn `GITRESET`
 4. `tests/check-site-conf.sh --optional` – Lua-Syntax von site.conf und
    image-customization.lua (ohne Lua nur Warnung)
 5. SBRANCH bestimmen, Sites-Datei parsen, Targets auflösen
