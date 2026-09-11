@@ -254,6 +254,7 @@ images/
     .build-state                    Zustand (5)
     .site-seconds                   Bauzeit je Domain
     .status/<main|target>           Phase je Prozess (7.5)
+    buildinfo/                      Collector live: <lauf>.metrics.csv, <lauf>.collector.log
     packages/                       Gluon-Pakete
     opkg-2023.2.x/gluon-<sbranch>/<target>/<sub>/   opkg-Feeds
     <template>/<code>/
@@ -261,6 +262,8 @@ images/
       site/                         Site-Konfig, build.sh, Konfigs,
                                     prepare.log, build-info.txt, build.log.gz
   images-<epoch>/                   fertiger Lauf
+    buildinfo/                      <lauf>.summary.txt, .empfehlung.txt, .metrics.csv.gz,
+                                    .build-times.csv, .collector.log
 assembled/                          erzeugte Site-Konfigs, Roh-Logs laufender Schritte
 .overlays/                          Parallelbetrieb: Worker-Overlays, golden.fingerprint
 metrics/                            Collector: <lauf>.csv, empfehlung.txt
@@ -276,9 +279,20 @@ build-times.csv                     Zeiten aller Läufe
 | `build-times.csv` | `run_id,timestamp,epoch,build_order,phase,template,site_code,target,seconds,note`; Phasen `run_start`, `prepare`, `build`, `finalize`, `run_end` |
 | `.overlays/<target>.log` | Ausgabe eines Workers |
 | `long-server-task.log` | Hauptlog beim Start über den Wrapper |
+| `buildinfo/<lauf>.summary.txt` | der Kasten vom Laufende (Dauer, Umfang, Erlang, Images, Größen) |
+| `buildinfo/<lauf>.empfehlung.txt` | Empfehlung und Kennzahlen des Collectors (7.6) |
+| `buildinfo/<lauf>.metrics.csv(.gz)` | 1-s-Proben: CPU, iowait, Platte, steal, Phasen; während des Laufs live als `.csv` |
+| `buildinfo/<lauf>.build-times.csv` | die Schrittzeiten nur dieses Laufs |
+| `buildinfo/<lauf>.collector.log` | Ergebniszeile des Collectors |
 
 - Kontrolle eines Laufs: Zahl der `build`-Zeilen je `run_id` gegen `steps`
   aus `run_start`; ohne `run_end` wurde hart abgeschossen.
+- `buildinfo/` liegt beim Lauf selbst: Wer die Images sieht, etwa über den
+  Webserver, sieht auch, wie der Lauf lief, und muss nicht auf dem
+  Buildhost suchen. Während des Laufs sind CSV und Log Hardlinks auf die
+  Dateien in `metrics/`. Das Verzeichnis wird also live mitgeschrieben, und
+  `metrics/` behält die Historie auch nach dem Wegräumen alter `images-*`.
+  Bei `--resume` stehen dort mehrere Lauf-IDs, jede mit ihrem Teil.
 
 ---
 
