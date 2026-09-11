@@ -228,7 +228,14 @@ Später Geladenes gewinnt.
   Konfigurationen inkl. `build.local.conf`, Sites-Datei, `templates/` und
   `patches/` (sha256). Weicht er bei `--resume` ab → Abbruch, denn eine
   Fortsetzung mit anderen Eingaben ist keine. Typischer Fall: `git pull`
-  zwischen Abbruch und `--resume`. Die Meldung nennt `--restart` als Ausweg.
+  zwischen Abbruch und `--resume`. Die Meldung nennt `--restart` als Ausweg,
+  und darüber steht, was sich geändert hat: `targets: a b -> a b c`,
+  `changed: templates/common/modules`, `added:`/`removed:`. Die Grundlage
+  dafür ist `images/running/.build-fingerprint`: dieselben Eingaben, je Posten
+  eine Zeile. Konfigurationsdateien stehen dort nur mit Hash, weil `running/`
+  über den Webserver lesbar sein kann.
+- Bei `--resume` zeigt die Zeile „Firmware version (SBRANCH)“ keinen frisch
+  berechneten Wert. Es gilt der aus der Zustandsdatei, `Release:` darunter.
   Automatisch fällt `--resume` bewusst **nicht** darauf zurück, weil das
   womöglich Stunden fertiger Images wegwerfen würde.
 - `--resume` übernimmt SBRANCH, Ausgabeverzeichnis und Site-Version aus der
@@ -255,6 +262,7 @@ Später Geladenes gewinnt.
 images/
   running/                          während des Laufs
     .build-state                    Zustand (5)
+    .build-fingerprint              Eingaben je Posten, für die Meldung bei --resume (5)
     .site-seconds                   Bauzeit je Domain
     .status/<main|target>           Phase je Prozess (7.5)
     buildinfo/                      Collector live: <lauf>.metrics.csv, <lauf>.collector.log
