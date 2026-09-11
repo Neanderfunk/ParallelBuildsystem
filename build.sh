@@ -2394,14 +2394,50 @@ start_worker ()
 PAR_START_EPOCH=""
 PAR_END_EPOCH=""
 
+# Ordnet die Targets fuer die Warteschlange: die laengsten zuerst (LPT,
+# "longest processing time first"). Sonst startet ein grosses Target womoeglich
+# als letztes und laeuft allein weiter, waehrend die anderen Worker schon
+# fertig sind - auf wir-horst lief so die zweite Welle 13-18 min mit 2 von 6
+# Workern. Die Dauer ist der Mittelwert der Bauschritte des Targets in dessen
+# juengstem frueheren Lauf laut BUILD_TIMES_FILE. Targets ohne Vorgeschichte
+# kommen nach vorn: unbekannt kann auch gross heissen. Gibt die Targets
+# zeilenweise aus.
+order_targets_by_duration ()
+{
+  local -A DAUER=()
+  local T SEK
+  if [ -f "$BUILD_TIMES_FILE" ]; then
+    while read -r SEK T; do
+      DAUER[$T]="$SEK"
+    done < <(awk -F, -v self="${BUILD_RUN_ID:-}" '
+      $5 == "build" && $1 != self && $9 ~ /^[0-9]+$/ {
+        if ($3 + 0 > last[$8] + 0) { last[$8] = $3; run[$8] = $1 }
+        s[$8 SUBSEP $1] += $9; n[$8 SUBSEP $1]++
+      }
+      END { for (t in run) { k = t SUBSEP run[t]; printf "%d %s\n", s[k] / n[k], t } }
+    ' "$BUILD_TIMES_FILE")
+  fi
+  # if statt "&&"/"||": unter errexit und pipefail liesse ein letztes
+  # fehlschlagendes [ ... ] die Schleife und damit die Funktion scheitern.
+  for T in "$@"; do
+    if [ -z "${DAUER[$T]:-}" ]; then echo "$T"; fi
+  done
+  for T in "$@"; do
+    if [ -n "${DAUER[$T]:-}" ]; then echo "${DAUER[$T]} $T"; fi
+  done | sort -rn -k1,1 | awk '{ print $2 }'
+  return 0
+}
+
 run_parallel ()
 {
-  local -a WARTESCHLANGE=( "${BUILD_TARGETS[@]}" )
+  local -a WARTESCHLANGE=()
+  mapfile -t WARTESCHLANGE < <(order_targets_by_duration "${BUILD_TARGETS[@]}")
   local -a GESCHEITERT=()
   local -i GESTARTET=0
   local PID TARGET RC
 
   echo "Parallelbetrieb: ${#WARTESCHLANGE[@]} Targets, bis zu $WORKERS Worker, ${WORKER_START_DELAY}s Versatz beim Hochfahren."
+  echo "Reihenfolge (laengste zuerst, nach dem letzten Lauf): ${WARTESCHLANGE[*]}"
   PAR_START_EPOCH="$(date +%s)"
 
   while (( ${#WARTESCHLANGE[@]} > 0 || ${#WORKER_LAUFEND[@]} > 0 )); do
