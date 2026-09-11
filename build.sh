@@ -2046,7 +2046,7 @@ collector_start ()
   mkdir -p -- "$METRICS_DIR"
   python3 "$SANDBOX_DIR/scripts/buildcollect.py" \
     "$STATUS_DIR" "$METRICS_DIR/$BUILD_RUN_ID.csv" "$METRICS_DIR/$BUILD_RUN_ID.empfehlung.txt" \
-    "$SANDBOX_DIR" "$WORKERS" "$BUILD_RUN_ID" \
+    "$SANDBOX_DIR" "$WORKERS" "$BUILD_RUN_ID" "${#BUILD_TARGETS[@]}" \
     > "$METRICS_DIR/$BUILD_RUN_ID.log" 2>&1 &
   COLLECTOR_PID=$!
   echo "Metriken: $METRICS_DIR/$BUILD_RUN_ID.csv"
@@ -2421,12 +2421,15 @@ print_run_summary ()
   # Parallelphase fertig wurden (strikt nach ihrem Beginn - der letzte Schritt
   # des golden tree endet oft in derselben Sekunde), durch deren Wandzeit - die mittlere Zahl
   # gleichzeitig belegter Worker (A. K. Erlang, Telefonvermittlung).
-  local ERL=""
+  # Ein Worker je Target: mehr als T laufen nie gleichzeitig.
+  local ERL="" WIRKSAM_TXT=""
+  local -i WIRKSAM=$(( WORKERS < T ? WORKERS : T ))
+  (( WIRKSAM < WORKERS )) && WIRKSAM_TXT=", $WORKERS konfiguriert"
   if [ -n "$PAR_START_EPOCH" ] && [ -n "$PAR_END_EPOCH" ] && [ -f "$BUILD_TIMES_FILE" ] \
      && (( PAR_END_EPOCH > PAR_START_EPOCH )); then
-    ERL=$(awk -F, -v r="$BUILD_RUN_ID" -v a="$PAR_START_EPOCH" -v w="$(( PAR_END_EPOCH - PAR_START_EPOCH ))" -v n="$WORKERS" \
+    ERL=$(awk -F, -v r="$BUILD_RUN_ID" -v a="$PAR_START_EPOCH" -v w="$(( PAR_END_EPOCH - PAR_START_EPOCH ))" -v n="$WIRKSAM" -v x="$WIRKSAM_TXT" \
       '$1 == r && $5 == "build" && $3 > a { s += $9; k++ }
-       END { if (k) printf "%.1f Erl von %d  (Parallelphase %d min, %d Bauschritte)", s / w, n, w / 60, k }' "$BUILD_TIMES_FILE")
+       END { if (k) printf "%.1f Erl von %d%s  (Parallelphase %d min, %d Bauschritte)", s / w, n, x, w / 60, k }' "$BUILD_TIMES_FILE")
   fi
 
   local FREI
