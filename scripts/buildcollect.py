@@ -264,6 +264,25 @@ else:
         empfohlen = max(workers, wirksam + 1)
         grund = ("CPU mit allen Workern belegt nur %.0f %% ausgelastet, iowait %.2f "
                  "Kerne, Platte %.0f %% - es ist Luft, ein Worker mehr" % (A * 100, I, M))
+        # Wellen: Ein Worker baut ein Target ueber alle Domains, T Targets auf
+        # W Worker ergeben ceil(T/W) Wellen. Ein Worker mehr, der keine Welle
+        # spart, verlaengert nur den Leerlauf am Ende (Lauf 3 auf wir-horst:
+        # 8 Targets, 6 -> 7 Worker waeren weiter 2 Wellen gewesen, mit einem
+        # Target allein in der zweiten). Also gleich die kleinste Zahl, die
+        # eine Welle spart - hier ausnahmsweise mehr als +1, weil sich die
+        # Wellen aus der Target-Zahl ergeben und nicht aus der Messung
+        # schwingen koennen.
+        if targets and wirksam < targets:
+            wellen = -(-targets // wirksam)
+            for w in range(wirksam + 1, targets + 1):
+                if -(-targets // w) < wellen:
+                    if w <= obergrenze:
+                        empfohlen = max(workers, w)
+                        grund = ("CPU mit allen Workern belegt nur %.0f %% ausgelastet, iowait "
+                                 "%.2f Kerne, Platte %.0f %% - es ist Luft; %d Worker sparen eine "
+                                 "Welle (%d Targets: %d statt %d Wellen)"
+                                 % (A * 100, I, M, w, targets, -(-targets // w), wellen))
+                    break
     else:
         empfohlen = workers
         grund = ("CPU %.0f %% ausgelastet, iowait %.2f Kerne, Platte %.0f %% - "
