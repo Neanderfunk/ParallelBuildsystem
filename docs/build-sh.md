@@ -377,7 +377,13 @@ build.sh (Hauptprozess, eigene UID)
   Telefonvermittlung): die mittlere Zahl gleichzeitig belegter Worker über die
   Parallelphase, in `metrics/empfehlung.txt` als `worker_erlang`. Der Kasten am
   Ende des Laufs rechnet ihn unabhängig aus der Zeiten-CSV nach (Schrittzeit
-  ÷ Wandzeit). Erster Lauf auf wir-horst: 4,6 Erl bei 6 Workern
+  ÷ Wandzeit). wir-horst mit 6 Workern: erster Lauf 4,6 Erl, zweiter Lauf
+  4,9 Erl (Kasten) und 5,0 Erl (Collector). Die beiden unabhängigen
+  Rechenwege stimmen also überein
+- **Die Empfehlung kennt die Zahl der Targets nicht.** Ein Worker baut ein
+  Target über alle Domains, mehr gleichzeitige Worker als Targets gibt es
+  also nicht. Der zweite horst-Lauf empfahl 7 Worker bei 6 Targets; das wirkt
+  erst bei Läufen mit mehr Targets, etwa dem Volllauf mit 22
 - nur ein **erfolgreicher** Lauf setzt `metrics/empfehlung.txt`
   (ein an Speichermangel gestorbener Lauf könnte sonst „mehr“ empfehlen)
 - `WORKERS=auto` liest sie; ohne Datei `WORKERS_AUTO_START`
@@ -495,32 +501,44 @@ build.sh (Hauptprozess, eigene UID)
 | Posten | Größe |
 |---|---|
 | je Domain × Target | ~250 MB (Images ~185, Pakete ~35, Log gepackt ~1, Luft) |
+| gemessen, 6 große Targets (8.7, Lauf 2) | **~430 MB**: 23,3 GB für 54 Bauschritte (Images 21,8 GB, opkg 1,3 GB, Pakete 216 MB, Logs 19 MB) |
 | upperdir je Worker | 2,8 GB erste Domain, +0,2 GB je weitere |
 | golden tree | einmal, gemeinsam (lowerdir) |
 | Beispiel 96 Varianten × 22 Targets | ~530 GB Ausgabe |
 | Beispiel 6 Worker × 86 Domains | ~6 × 20 GB upperdir, zeitweise |
 
+- `SPACE_UNIT_MB` ist ein Mittel über alle 22 Targets. Ein Lauf nur mit den
+  großen Targets (x86-64, mediatek-*, ramips-mt7621) braucht je Schritt fast
+  das Doppelte. Die Platzprüfung unterschätzt ihn also und fängt das nur über
+  `SPACE_RESERVE_MB` ab. Genauer wäre eine Größe je Target (offen, Kapitel 9).
+
 ### 8.6 Laufzeit-Abschätzung
 
 - seriell: **170 + D × 94 min**
-- parallel, W Worker: **264 + (D − 1) × 94 / W min** (golden tree + Rest verteilt)
-- Annahme: lineare Skalierung – **Untergrenze, ungemessen**. Dämpfend:
-  Plattenspitzen gleichzeitiger Worker, ungleich große Targets am Ende der
-  Warteschlange, Versatz beim Start.
+- parallel: **264 + (D − 1) × 94 / F min** (golden tree + Rest verteilt)
+- **F ist nicht W.** Gemessen auf wir-horst mit W = 6 (8.7): **F = 2,7–2,8**.
+  Ein Schritt dauert unter Last 1,7× so lange wie seriell, und im Mittel sind
+  4,6–4,9 der 6 Worker belegt: F ≈ Erl ÷ 1,7.
+- Mit 22 Targets ist F eher größer: Die Warteschlange bleibt länger voll, der
+  Auslauf ungleich großer Targets fällt weniger ins Gewicht. Obergrenze mit
+  6 Workern, alle belegt: 6 ÷ 1,7 ≈ 3,5.
 
-| Domains | seriell | parallel, W = 6 (Schätzung) |
-|---|---|---|
-| 4 (broken) | ~9,1 h | ~5,2 h |
-| 43 | ~70 h | ~15 h |
-| 86 (stable voll) | ~138 h (5,7 Tage) | ~27 h |
+| Domains | seriell | parallel, W = 6, F = 2,8 (gemessen) | F = 3,5 (Obergrenze) |
+|---|---|---|---|
+| 4 (broken) | ~9,1 h | ~6,1 h | ~5,7 h |
+| 43 | ~70 h | ~28 h | ~23 h |
+| 86 (stable voll) | ~138 h (5,7 Tage) | ~52 h | ~42 h |
 
 - Bei wenigen Domains dominiert der golden tree (4,4 h), der Parallelbetrieb
   zahlt sich erst ab vielen Domains richtig aus.
 - Passt der golden-Fingerabdruck beim nächsten Lauf, entfällt der Neuaufbau –
-  dann sind es nur noch **D × 94 / W** plus Abschluss (Beispiel 86 Domains,
-  W = 6: ~22 h).
+  dann sind es nur noch **D × 94 / F** plus Abschluss (Beispiel 86 Domains:
+  ~48 h mit F = 2,8, ~38 h mit F = 3,5).
+- Die frühere Schätzung mit F = W (86 Domains ~27 h) war zu optimistisch.
 
-### 8.7 Erster Parallellauf auf wir-horst (10.09.2026, gemessen)
+### 8.7 Parallelläufe auf wir-horst (gemessen)
+
+#### Lauf 1 (10.09.2026)
 
 `domains-broken.conf` mit 5 Domains × 6 Targets (ath79-generic, ath79-nand,
 mediatek-filogic, mediatek-mt7622, ramips-mt7621, x86-64), `WORKERS=6`,
@@ -548,6 +566,39 @@ Tag (3 Domains, 143 min).
   aktiv“ – Fehler, der Hauptprozess blieb auf Status „golden“ stehen
   (behoben in `1f2b3ae`).
 
+#### Lauf 2 (11.09.2026, `26091100bro`)
+
+`sites.nefall.bro`, 9 Domains × dieselben 6 Targets, `WORKERS=6`, Stand
+`69eefea`. Die Werte stammen aus dem Kasten am Laufende und der Zeile des
+Collectors.
+
+| Phase | parallel | seriell (hochgerechnet wie Lauf 1) |
+|---|---|---|
+| prepare | 13 min | ~14 min |
+| golden tree + finalize | ~71 min (Rest aus 163 − 13 − 79) | ~67 min |
+| 8 Folgedomains (48 Bauschritte) | **79 min** Wandzeit | ~224 min (8 × 28 min) |
+| **ganzer Lauf** | **163 min** (2 h 43 min) | **~305 min** |
+
+- Folgedomains **2,8× schneller**, ganzer Lauf 1,9×.
+- **Skaliert linear.** Doppelt so viele Folgeschritte wie in Lauf 1 (48 statt
+  24) kosten fast genau doppelt so viel Wandzeit (79 statt 41 min, 9,9 statt
+  10,3 min je Domain). Hochlaufen und Auslauf fallen weniger ins Gewicht.
+- Worker: **4,9 Erl** (Kasten, aus der CSV) bzw. **5,0 Erl** (Collector, aus
+  1-s-Proben) von 6, gegen 4,6 in Lauf 1. Schritt unter Last im Mittel
+  ~480 s (4,9 × 79 min ÷ 48), also wieder 1,7× langsamer als seriell.
+- Collector: 8513 Proben, davon 2632 (31 %) mit allen 6 Workern belegt. In
+  diesen Proben: **CPU 46 %**, iowait 0,52 Kerne, Platte 11 % → Empfehlung
+  **7 Worker**. Weder Platte noch CPU sind der Engpass.
+- Warum ein Schritt trotzdem 1,7× langsamer wird, ist offen (Kapitel 9).
+  CPU und Platte zeigen es nicht. Denkbar sind kurze gleichzeitige
+  Plattenspitzen, die im Mittel verschwinden, sowie Speicherbandbreite, NUMA
+  oder ein niedrigerer Turbo-Takt bei vielen aktiven Kernen.
+- Ausgabe: **2556 Images** (284 je Domain: 192 sysupgrade, 89 factory,
+  3 other), **23,3 GB**. Das sind ~430 MB je Bauschritt, deutlich mehr als
+  `SPACE_UNIT_MB` (8.5). Danach 780 GB frei.
+- **Der golden tree ist jetzt der größte Posten**: 71 von 163 min (44 %),
+  seriell über die 6 Targets.
+
 ### 8.8 Multidomain (Einordnung)
 
 - Kosten hängen an der **Zahl der Images**, nicht an der Zahl der Domains darin.
@@ -561,11 +612,20 @@ Tag (3 Domains, 143 min).
 
 ## 9. Grenzen und offene Punkte
 
-- Parallelbetrieb auf wir-horst: erster Lauf am 10.09.2026 erfolgreich
-  (8.7), golden-Neuaufbau und 6 Worker gleichzeitig im echten Bau.
+- Parallelbetrieb auf wir-horst: zwei Läufe erfolgreich (8.7, 10. und
+  11.09.2026), golden-Neuaufbau und 6 Worker gleichzeitig im echten Bau.
+- **Größter Posten bei wenigen Domains ist jetzt der golden tree** (Lauf 2:
+  44 % der Laufzeit, seriell über die Targets). Nächster Hebel, falls es sich
+  lohnt: dessen Targets verteilen. Das ist nicht trivial, weil alle in
+  denselben lowerdir bauen.
+- Ein Bauschritt wird unter Last 1,7× langsamer, obwohl CPU (46 %) und Platte
+  (11 %) Luft zeigen. Die Ursache ist nicht gemessen.
+- `WORKERS`-Empfehlung ohne Blick auf die Zahl der Targets (7.6).
+- `SPACE_UNIT_MB` als Mittel über alle Targets unterschätzt Läufe mit großen
+  Targets (8.5). Eine Größe je Target wäre genauer.
 - Log eines gescheiterten Schritts geht beim `--resume` verloren
   (liegt ungepackt in `assembled/`).
 - Abschluss aller Domains erst am Ende des Parallellaufs – die Site-Verzeichnisse
   (Manifest, `build.log.gz`) erscheinen spät, die Target-Logs aber schon früher.
-- Laufzeit-Abschätzung 8.6 ist gerechnet, nicht gemessen – der erste
-  vollständige Parallellauf liefert die echten Werte.
+- Laufzeit-Abschätzung 8.6 beruht auf dem gemessenen Faktor F mit 6 Targets.
+  Für den Volllauf mit 22 Targets liefert erst ein echter Lauf den Wert.
