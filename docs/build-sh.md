@@ -380,10 +380,18 @@ build.sh (Hauptprozess, eigene UID)
   ÷ Wandzeit). wir-horst mit 6 Workern: erster Lauf 4,6 Erl, zweiter Lauf
   4,9 Erl (Kasten) und 5,0 Erl (Collector). Die beiden unabhängigen
   Rechenwege stimmen also überein
-- **Die Empfehlung kennt die Zahl der Targets nicht.** Ein Worker baut ein
-  Target über alle Domains, mehr gleichzeitige Worker als Targets gibt es
-  also nicht. Der zweite horst-Lauf empfahl 7 Worker bei 6 Targets; das wirkt
-  erst bei Läufen mit mehr Targets, etwa dem Volllauf mit 22
+- **Wirksame Worker = min(`WORKERS`, Targets).** Ein Worker baut ein Target
+  über alle Domains, mehr gleichzeitige Worker als Targets gibt es also nicht.
+  „Alle belegt“ und die Empfehlung beziehen sich auf die wirksamen Worker:
+  - Luft → wirksame + 1; eine höhere Konfiguration wird weder gesenkt noch
+    weiter hochgezählt
+  - liegt die Empfehlung über der Target-Zahl, sagt die Begründung „wirkt
+    erst in Läufen mit mehr als N Targets“. So war es beim zweiten horst-Lauf:
+    7 Worker bei 6 Targets, gedacht für den Volllauf mit 22
+  - `metrics/empfehlung.txt` enthält zusätzlich `targets=` und
+    `wirksame_workers=`
+  - Der Kasten zeigt „Erl von 6, 7 konfiguriert“, wenn mehr Worker
+    konfiguriert als Targets da sind
 - nur ein **erfolgreicher** Lauf setzt `metrics/empfehlung.txt`
   (ein an Speichermangel gestorbener Lauf könnte sonst „mehr“ empfehlen)
 - `WORKERS=auto` liest sie; ohne Datei `WORKERS_AUTO_START`
@@ -619,8 +627,11 @@ Collectors.
   lohnt: dessen Targets verteilen. Das ist nicht trivial, weil alle in
   denselben lowerdir bauen.
 - Ein Bauschritt wird unter Last 1,7× langsamer, obwohl CPU (46 %) und Platte
-  (11 %) Luft zeigen. Die Ursache ist nicht gemessen.
-- `WORKERS`-Empfehlung ohne Blick auf die Zahl der Targets (7.6).
+  (11 %) Luft zeigen. Die Ursache ist nicht gemessen. wir-horst ist ein
+  KVM-Gast; andere Lasten auf dem Hypervisor sieht der Gast nicht, sie
+  erklären also einen Teil der Streuung zwischen Läufen. Einsehen ließe
+  sich das, am Ergebnis ändert es aber wenig. Von innen sichtbar wäre höchstens die
+  steal time (`/proc/stat`), die der Collector bisher nicht erfasst.
 - `SPACE_UNIT_MB` als Mittel über alle Targets unterschätzt Läufe mit großen
   Targets (8.5). Eine Größe je Target wäre genauer.
 - Log eines gescheiterten Schritts geht beim `--resume` verloren
