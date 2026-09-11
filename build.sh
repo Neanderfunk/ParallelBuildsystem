@@ -1651,6 +1651,15 @@ build_site_target ()
 
   if (( JOB_COUNT == 0 )); then
     JOB_COUNT="$(( $(getconf _NPROCESSORS_ONLN) * MAKE_J_FACTOR ))"
+    # Im Parallelbetrieb teilen sich die Worker die Maschine. Mit dem vollen
+    # Wert je Worker stritten sich in den Kompilierschueben bis zu Worker x
+    # Kerne x Faktor Jobs um die Kerne (wir-horst: 6 x 72 = 432 auf 36,
+    # vmstat r bis 95). Der golden tree im Hauptprozess behaelt den vollen
+    # Wert, er baut allein. Ein ausdrueckliches MAKE_J_VAL gilt unveraendert.
+    if [ -n "$WORKER_TARGET" ] && (( ${PAR_WORKERS:-1} > 1 )); then
+      JOB_COUNT=$(( JOB_COUNT / PAR_WORKERS ))
+      (( JOB_COUNT >= 2 )) || JOB_COUNT=2
+    fi
   fi
 
   local MAKE_CMD
@@ -2348,6 +2357,9 @@ start_worker ()
   (
     cd -- "$SANDBOX_DIR"
     export BUILD_RUN_ID
+    # Wie viele Worker gleichzeitig laufen koennen, fuer die Job-Zahl je
+    # Worker (JOB_COUNT in build_site_target).
+    export PAR_WORKERS="$(( WORKERS < ${#BUILD_TARGETS[@]} ? WORKERS : ${#BUILD_TARGETS[@]} ))"
     # setsid: eigene Prozessgruppe. Ein Signal an den Worker allein erreichte
     # sein make nicht - das ist ein Kind des Workers. An die Gruppe gerichtet
     # trifft es alles, was der Worker gestartet hat, und nicht den Hauptprozess.
