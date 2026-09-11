@@ -649,6 +649,37 @@ Collectors.
 - **Der golden tree ist jetzt der größte Posten**: 71 von 163 min (44 %),
   seriell über die 6 Targets.
 
+#### Lauf 3 (11.09.2026, `26091115bro`)
+
+`domains-broken.conf`, 4 Domains × **8 Targets** (dazu ath79-mikrotik und
+x86-generic), `WORKERS=6`. Die Auswertung stammt erstmals aus `buildinfo/`
+über imageslive.
+
+| Phase | Dauer |
+|---|---|
+| prepare | 17 min |
+| golden tree (8 Targets seriell) | 88 min |
+| 3 Folgedomains (24 Schritte) | 44 min Wandzeit |
+| **ganzer Lauf** | **151 min** |
+
+- **Nur 4,1 Erl, weil die Warteschlange am Ende leerläuft.** 8 Targets auf
+  6 Worker ergeben zwei Wellen:
+
+  | Targets | Start | Ende |
+  |---|---|---|
+  | ath79-generic … ramips-mt7621 | 0'–5' | 25'–31' |
+  | x86-generic, x86-64 | 26' | 44' |
+
+  In der zweiten Welle laufen 13–18 min lang nur 2 Worker.
+- **Der Faktor 1,7 je Schritt ist direkt sichtbar:** Die x86-Schritte
+  brauchen unter voller Last etwa 7 min, allein etwa 5 min.
+- steal 0,05 Kerne, im Maximum 1: Der Hypervisor war nicht die Ursache.
+- **Die Empfehlung „+1“ (7) passt hier nicht.** Mit 8 Targets bleibt es bei
+  zwei Wellen, in der zweiten liefe ein Target allein. 8 Worker ergäben
+  eine Welle (geschätzt ~30 min statt 44).
+- **Der golden tree macht 58 % der Laufzeit aus.** Bei wenigen Domains ist
+  er der größte Hebel.
+
 ### 8.8 Multidomain (Einordnung)
 
 - Kosten hängen an der **Zahl der Images**, nicht an der Zahl der Domains darin.
@@ -682,6 +713,13 @@ Collectors.
   nächste Lauf zeigt, ob sie eine Rolle spielt.
 - `SPACE_UNIT_MB` als Mittel über alle Targets unterschätzt Läufe mit großen
   Targets (8.5). Eine Größe je Target wäre genauer.
+- **Wellen:** Die Worker-Zahl sollte die Zahl der Wellen (Targets ÷ Worker,
+  aufgerundet) senken, nicht einfach +1 sein (Lauf 3). Bei ungleich großen
+  Targets hilft zusätzlich eine Warteschlange, die die längsten zuerst
+  startet. Die Dauern dafür liegen schon in `build-times.csv`.
+- `-j` je Worker = Kerne × `MAKE_J_FACTOR`, unabhängig von der Worker-Zahl.
+  Das ist ein Kandidat für die Schübe mit `r` bis 95. Zuerst messen (PSI im
+  nächsten Lauf), dann `MAKE_J_VAL` probieren.
 - Log eines gescheiterten Schritts geht beim `--resume` verloren
   (liegt ungepackt in `assembled/`).
 - Abschluss aller Domains erst am Ende des Parallellaufs – die Site-Verzeichnisse
