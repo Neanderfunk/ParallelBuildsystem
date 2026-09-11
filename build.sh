@@ -744,6 +744,15 @@ preflight_check ()
       || FEHLT+=( "Signaturschluessel buildkeys/$SIGNKEY_FILE (SIGNKEY_FILE)" )
   fi
 
+  # Der Gluon-Baum. build.sh klont ihn nicht selbst; ohne ihn scheiterte der
+  # Lauf erst nach der Site-Erzeugung an einem pushd. Der Branch steht in
+  # Spalte 2 der Sites-Datei.
+  if ! git -C "$SANDBOX_DIR/gluon" rev-parse --git-dir >/dev/null 2>&1; then
+    local GB=""
+    [ -f "$SITES_FILE" ] && GB="$(awk '!/^[[:space:]]*#/ && NF { print $2; exit }' "$SITES_FILE")"
+    FEHLT+=( "Gluon-Baum $SANDBOX_DIR/gluon (git). Einmalig: git clone -b ${GB:-<Gluon-Branch aus Spalte 2 der Sites-Datei>} https://github.com/freifunk-gluon/gluon $SANDBOX_DIR/gluon" )
+  fi
+
   # Der Collector ist ein Python-Skript. Ohne python3 ohne Metriken.
   if [ "$METRICS" = true ] && ! command -v python3 >/dev/null 2>&1; then
     METRICS=false
