@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """buildcollect.py - Metriken eines build.sh-Laufs, fuer den naechsten.
 
-  buildcollect.py <status-dir> <csv> <empfehlung> <pfad-im-baum> <workers> <lauf-id>
+  buildcollect.py <status-dir> <csv> <empfehlung> <pfad-im-baum> <workers> <lauf-id> [<targets>]
 
 Wird von build.sh im Hintergrund gestartet und mit SIGTERM beendet. Sampelt
 jede Sekunde CPU- und Plattenlast und versieht jede Probe mit den Phasen, die
@@ -29,6 +29,14 @@ Worker-Zahl ist Hochfahren (Startversatz) und Auslaufen der Warteschlange.
 Die Empfehlung ist gedaempft und begrenzt: hoechstens ein Worker mehr oder
 weniger je Lauf, nie unter 1, nie ueber die halbe Kernzahl. Ein Regler, der
 auf einem einzigen Lauf um mehrere Stufen springt, schwingt sich auf.
+
+Warum die Zahl der Targets: Ein Worker baut ein Target ueber alle Domains.
+Gleichzeitig laufen also hoechstens min(<workers>, <targets>) - die
+"wirksamen" Worker. Nur mit ihnen ist "alle belegt" erreichbar, auf sie
+bezieht sich die Empfehlung. Liegt sie ueber der Target-Zahl, sagt die
+Begruendung das: Wirkung erst in einem Lauf mit mehr Targets (Volllauf). Eine
+Empfehlung ueber der wirksamen Zahl wird nicht weiter hochgezaehlt, solange
+kein Lauf sie belegen konnte.
 """
 import os, re, signal, statistics, subprocess, sys, time
 
@@ -43,6 +51,8 @@ INTERVALL      = 1.0
 
 status_dir, out_csv, emp_file, pfad, workers, lauf_id = sys.argv[1:7]
 workers = int(workers)
+targets = int(sys.argv[7]) if len(sys.argv) > 7 else 0   # 0: unbekannt
+wirksam = max(1, min(workers, targets)) if targets else workers
 KERNE = os.cpu_count()
 
 laufen = True
@@ -135,7 +145,7 @@ with open(out_csv, "w") as csv:
 
 # --- Auswertung -------------------------------------------------------------
 voll = [p for p in proben
-        if p[3]["build"] == workers and p[3]["golden"] == 0 and p[3]["prepare"] == 0]
+        if p[3]["build"] == wirksam and p[3]["golden"] == 0 and p[3]["prepare"] == 0]
 
 # Erlang: mittlere Zahl belegter Worker ueber die Parallelphase
 parallel = [p[3]["build"] for p in proben
@@ -160,11 +170,13 @@ else:
     werte = {"cpu_auslastung": "%.2f" % A, "iowait_kerne": "%.2f" % I,
              "platte_util_mittel": "%.1f" % M, "platte_util_p95": "%.1f" % U}
     if I > IOWAIT_ZU_HOCH or M > UTIL_ZU_HOCH:
-        empfohlen = workers - 1
+        empfohlen = wirksam - 1
         grund = ("die Platte ist der Engpass (iowait %.2f Kerne, Platte im Mittel "
                  "%.0f %%) - ein Worker weniger" % (I, M))
     elif A < CPU_LUFT:
-        empfohlen = workers + 1
+        # Von den wirksamen aus, aber eine hoehere Konfiguration nicht senken:
+        # sie kann fuer Laeufe mit mehr Targets gedacht sein.
+        empfohlen = max(workers, wirksam + 1)
         grund = ("CPU mit allen Workern belegt nur %.0f %% ausgelastet, iowait %.2f "
                  "Kerne, Platte %.0f %% - es ist Luft, ein Worker mehr" % (A * 100, I, M))
     else:
@@ -175,12 +187,17 @@ else:
 geklemmt = max(1, min(obergrenze, empfohlen))
 if geklemmt != empfohlen:
     grund += " (begrenzt auf %d bis %d)" % (1, obergrenze)
+if targets and geklemmt > targets:
+    grund += (" - wirkt erst in Laeufen mit mehr als %d Targets, hier baut jeder "
+              "Worker ein Target" % targets)
 
 with open(emp_file + ".tmp", "w") as f:
     f.write("# Empfehlung aus Lauf %s, %s\n" % (lauf_id, time.strftime("%Y-%m-%d %H:%M")))
     f.write("# Gelesen von build.sh bei WORKERS=auto; sonst nur zur Kenntnis.\n")
     f.write("empfohlen=%d\n" % geklemmt)
     f.write("beobachtet_workers=%d\n" % workers)
+    f.write("targets=%d\n" % targets)
+    f.write("wirksame_workers=%d\n" % wirksam)
     f.write("kerne=%d\n" % KERNE)
     f.write("proben=%d\n" % len(proben))
     f.write("proben_alle_belegt=%d\n" % len(voll))
@@ -190,5 +207,8 @@ with open(emp_file + ".tmp", "w") as f:
         f.write("%s=%s\n" % (k, v))
     f.write("begruendung=%s\n" % grund)
 os.replace(emp_file + ".tmp", emp_file)
-print("buildcollect: %d Proben, %d mit allen %d Workern belegt, Parallelphase %.1f Erl "
-      "-> empfohlen %d (%s)" % (len(proben), len(voll), workers, erlang, geklemmt, grund))
+print("buildcollect: %d Proben, %d mit allen %d Workern belegt%s, Parallelphase %.1f Erl "
+      "-> empfohlen %d (%s)" % (len(proben), len(voll), wirksam,
+                                " (%d konfiguriert, %d Targets)" % (workers, targets)
+                                if wirksam < workers else "",
+                                erlang, geklemmt, grund))
