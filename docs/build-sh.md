@@ -686,6 +686,36 @@ x86-generic), `WORKERS=6`. Die Auswertung stammt erstmals aus `buildinfo/`
 - **Der golden tree macht 58 % der Laufzeit aus.** Bei wenigen Domains ist
   er der größte Hebel.
 
+#### Lauf 4 (11.09.2026, `26091118bro`): `-j` geteilt, längste zuerst
+
+5 Domains × 8 Targets, `WORKERS=6`, erstmals mit `-j 12` je Worker, mit der
+Warteschlange nach Dauer und mit PSI im Collector.
+
+| | Lauf 3 | Lauf 4 |
+|---|---|---|
+| golden tree | 88 min | 91 min |
+| Parallelphase | 44 min / 24 Schritte | 58 min / 32 Schritte |
+| je Folgedomain | 14,7 min | **14,5 min** |
+| Schritt unter Last | ~7,5 min | ~7,3 min |
+| Erlang | 4,1 | 4,0 |
+| PSI cpu (Mittel / alle belegt) | – | **2 % / 4 %** |
+| PSI io (Mittel / alle belegt) | – | 6 % / 9 %, blockiert max 37 |
+| running im Mittel | (`r` bis 95 in der Stichprobe) | 12,6 |
+
+- **Die `-j`-Teilung beseitigt den Wettstreit um die CPU**, macht die
+  Schritte aber kaum schneller. Die CPU war also nicht die Ursache des
+  Faktors 1,7. Übrig bleibt I/O: PSI io 9 % bei voller Belegung, Platte p95
+  84 %. Die Kandidaten sind overlayfs copy-up und Writeback.
+- **Die Reihenfolge nach Dauer greift:** filogic, ramips, ath79-generic,
+  mikrotik, mt7622, nand, x86-64, x86-generic, genau die Dauern aus Lauf 3.
+  Bei ähnlich langen Targets hilft sie gegen die zweite Welle aber nicht:
+  Die x86-Targets liefen wieder ~20 min zu zweit.
+- **Die Empfehlung ist jetzt 8** („1 statt 2 Wellen“). Nächster Versuch:
+  `WORKERS=8`.
+- Mögliche nächste Stufe gegen I/O: die upperdirs der Worker auf tmpfs
+  (wir-horst: 113 GB RAM, 8 Worker ~25 GB). Das braucht user-xattrs auf
+  tmpfs, hängt also vom Kernel ab.
+
 ### 8.8 Multidomain (Einordnung)
 
 - Kosten hängen an der **Zahl der Images**, nicht an der Zahl der Domains darin.
@@ -719,7 +749,7 @@ x86-generic), `WORKERS=6`. Die Auswertung stammt erstmals aus `buildinfo/`
   nächste Lauf zeigt, ob sie eine Rolle spielt.
 - `SPACE_UNIT_MB` als Mittel über alle Targets unterschätzt Läufe mit großen
   Targets (8.5). Eine Größe je Target wäre genauer.
-- Nach Lauf 3 umgesetzt, noch ohne Messung im echten Parallellauf:
+- Nach Lauf 3 umgesetzt, in Lauf 4 gemessen (8.7):
   Empfehlung nach Wellen (7.6), die längsten Targets zuerst und `-j` je
   Worker geteilt (7.2). Der nächste Lauf auf wir-horst zeigt die Wirkung;
   zum Vergleich stellt `MAKE_J_VAL=72` das alte `-j` wieder her.
