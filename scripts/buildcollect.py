@@ -33,6 +33,20 @@ nicht - auf wir-horst (KVM-Gast) eine Quelle fuer Streuung zwischen Laeufen.
 frueheren Laeufen vergleichbar; steal wird nur ausgewiesen, nicht in die
 Empfehlung eingerechnet.
 
+Wartende Prozesse und Druck (Spalten running, blocked, psi_*): Die Last auf
+wir-horst lag bei 22 % CPU trotzdem bei 48 - Prozesse, die im Kernel warten
+(Zustand D), belegen keine CPU und zeigen sich im iowait-Mittel kaum.
+procs_running/procs_blocked aus /proc/stat sind die Momentwerte dazu, PSI
+(/proc/pressure/{cpu,io,memory}) sagt, welcher Anteil der Zeit durch Warten
+auf CPU, I/O oder Speicher verloren ging: "some" = mindestens ein Prozess
+wartete, "full" = alle nicht ruhenden. Ausgewertet werden die total-Zaehler
+(Mikrosekunden) zwischen zwei Proben, nicht die gleitenden avg10. Hoher
+psi_cpu spricht fuer Ueberbelegung (zu viele make-Jobs), hoher psi_io und
+viele blocked fuer einen I/O-Stau (overlayfs copy-up, Writeback). Wie steal
+nur ausgewiesen, noch nicht in der Empfehlung - erst braucht es Laeufe, an
+denen sich Schwellen festmachen lassen. Ohne PSI im Kernel bleiben die
+psi-Spalten leer.
+
 Die Empfehlung ist gedaempft und begrenzt: hoechstens ein Worker mehr oder
 weniger je Lauf, nie unter 1, nie ueber die halbe Kernzahl. Ein Regler, der
 auf einem einzigen Lauf um mehrere Stufen springt, schwingt sich auf.
@@ -94,6 +108,35 @@ def cpu():
     with open("/proc/stat") as f:
         return [int(x) for x in f.readline().split()[1:9]]
 
+def procs():
+    """Momentwerte aus /proc/stat: laufende und im Kernel wartende Prozesse."""
+    r = b = 0
+    with open("/proc/stat") as f:
+        for z in f:
+            if z.startswith("procs_running "):
+                r = int(z.split()[1])
+            elif z.startswith("procs_blocked "):
+                b = int(z.split()[1])
+    return r, b
+
+def psi():
+    """total-Zaehler (us) aus /proc/pressure, je Ressource und Art.
+    None fuer eine Ressource, die der Kernel nicht meldet."""
+    r = {}
+    for name in ("cpu", "io", "memory"):
+        try:
+            with open("/proc/pressure/" + name) as f:
+                r[name] = {z.split()[0]: int(z.rsplit("total=", 1)[1]) for z in f if "total=" in z}
+        except (OSError, ValueError):
+            r[name] = None
+    return r
+
+def psi_anteil(a, b, name, art, dt):
+    """Prozent der Zeit zwischen zwei psi()-Proben, None wenn unbekannt."""
+    if not a.get(name) or not b.get(name) or art not in a[name] or art not in b[name]:
+        return None
+    return max(0.0, min(100.0, (b[name][art] - a[name][art]) / (dt * 1e6) * 100))
+
 def disk():
     if not DEV:
         return None
@@ -125,17 +168,18 @@ def phasen():
     return n
 
 proben = []
-c0, d0, t0 = cpu(), disk(), time.time()
+c0, d0, t0, s0 = cpu(), disk(), time.time(), psi()
 with open(out_csv, "w") as csv:
-    csv.write("epoch,aktiv,iowait,util,schreib_mb,iops,prepare,golden,build,finalize,steal\n")
+    csv.write("epoch,aktiv,iowait,util,schreib_mb,iops,prepare,golden,build,finalize,steal,"
+              "running,blocked,psi_cpu,psi_io,psi_io_full,psi_mem\n")
     while laufen:
         time.sleep(INTERVALL)
-        c1, d1, t1 = cpu(), disk(), time.time()
+        c1, d1, t1, s1 = cpu(), disk(), time.time(), psi()
         dt = t1 - t0
         dc = [a - b for a, b in zip(c1, c0)]
         ges = sum(dc)
         if ges <= 0:
-            c0, d0, t0 = c1, d1, t1
+            c0, d0, t0, s0 = c1, d1, t1, s1
             continue
         aktiv = (1 - dc[3] / ges) * KERNE
         iow = (dc[4] / ges) * KERNE
@@ -147,12 +191,21 @@ with open(out_csv, "w") as csv:
         else:
             iops = schreib = util = 0.0
         n = phasen()
-        proben.append((aktiv, iow, util, n, steal))
-        csv.write("%.1f,%.2f,%.2f,%.1f,%.1f,%.0f,%d,%d,%d,%d,%.2f\n" % (
+        running, blocked = procs()
+        x = {"running": running, "blocked": blocked,
+             "psi_cpu": psi_anteil(s0, s1, "cpu", "some", dt),
+             "psi_io": psi_anteil(s0, s1, "io", "some", dt),
+             "psi_io_full": psi_anteil(s0, s1, "io", "full", dt),
+             "psi_mem": psi_anteil(s0, s1, "memory", "some", dt)}
+        proben.append((aktiv, iow, util, n, steal, x))
+        fmt = lambda v: "" if v is None else "%.1f" % v
+        csv.write("%.1f,%.2f,%.2f,%.1f,%.1f,%.0f,%d,%d,%d,%d,%.2f,%d,%d,%s,%s,%s,%s\n" % (
             t1, aktiv, iow, util, schreib, iops,
-            n["prepare"], n["golden"], n["build"], n["finalize"], steal))
+            n["prepare"], n["golden"], n["build"], n["finalize"], steal,
+            running, blocked, fmt(x["psi_cpu"]), fmt(x["psi_io"]),
+            fmt(x["psi_io_full"]), fmt(x["psi_mem"])))
         csv.flush()
-        c0, d0, t0 = c1, d1, t1
+        c0, d0, t0, s0 = c1, d1, t1, s1
 
 # --- Auswertung -------------------------------------------------------------
 voll = [p for p in proben
@@ -168,6 +221,16 @@ steal_par = [p[4] for p in proben
              if p[3]["build"] > 0 and p[3]["golden"] == 0 and p[3]["prepare"] == 0]
 steal_mittel = statistics.mean(steal_par) if steal_par else 0.0
 steal_max = max(steal_par) if steal_par else 0.0
+
+# Warten und Druck ueber die Parallelphase (dieselben Proben wie Erlang)
+par_proben = [p for p in proben
+              if p[3]["build"] > 0 and p[3]["golden"] == 0 and p[3]["prepare"] == 0]
+def mittel(werte):
+    w = [v for v in werte if v is not None]
+    return statistics.mean(w) if w else None
+druck = {k: mittel(p[5][k] for p in par_proben)
+         for k in ("running", "blocked", "psi_cpu", "psi_io", "psi_io_full", "psi_mem")}
+blocked_max = max((p[5]["blocked"] for p in par_proben), default=0)
 
 def p95(w):
     s = sorted(w)
@@ -187,6 +250,10 @@ else:
     werte = {"cpu_auslastung": "%.2f" % A, "iowait_kerne": "%.2f" % I,
              "platte_util_mittel": "%.1f" % M, "platte_util_p95": "%.1f" % U,
              "steal_kerne_alle_belegt": "%.2f" % statistics.mean(p[4] for p in voll)}
+    for k in ("blocked", "psi_cpu", "psi_io", "psi_io_full", "psi_mem"):
+        v = mittel(p[5][k] for p in voll)
+        if v is not None:
+            werte[k + "_alle_belegt"] = "%.1f" % v
     if I > IOWAIT_ZU_HOCH or M > UTIL_ZU_HOCH:
         empfohlen = wirksam - 1
         grund = ("die Platte ist der Engpass (iowait %.2f Kerne, Platte im Mittel "
@@ -223,12 +290,20 @@ with open(emp_file + ".tmp", "w") as f:
     f.write("worker_erlang_proben=%d\n" % len(parallel))
     f.write("steal_kerne_mittel=%.2f\n" % steal_mittel)
     f.write("steal_kerne_max=%.2f\n" % steal_max)
+    for k, v in druck.items():
+        f.write("%s_mittel=%s\n" % (k, "" if v is None else "%.1f" % v))
+    f.write("blocked_max=%d\n" % blocked_max)
     for k, v in werte.items():
         f.write("%s=%s\n" % (k, v))
     f.write("begruendung=%s\n" % grund)
 os.replace(emp_file + ".tmp", emp_file)
+pz = lambda v: "?" if v is None else "%.0f%%" % v
 print("buildcollect: %d Proben, %d mit allen %d Workern belegt%s, Parallelphase %.1f Erl, "
-      "steal %.2f Kerne (max %.1f) -> empfohlen %d (%s)" % (
+      "steal %.2f Kerne (max %.1f), PSI cpu %s io %s/%s mem %s, blockiert %s (max %d) "
+      "-> empfohlen %d (%s)" % (
           len(proben), len(voll), wirksam,
           " (%d konfiguriert, %d Targets)" % (workers, targets) if wirksam < workers else "",
-          erlang, steal_mittel, steal_max, geklemmt, grund))
+          erlang, steal_mittel, steal_max,
+          pz(druck["psi_cpu"]), pz(druck["psi_io"]), pz(druck["psi_io_full"]), pz(druck["psi_mem"]),
+          "?" if druck["blocked"] is None else "%.1f" % druck["blocked"], blocked_max,
+          geklemmt, grund))
