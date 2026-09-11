@@ -2044,6 +2044,18 @@ collector_start ()
 {
   [ "$METRICS" = true ] || return 0
   mkdir -p -- "$METRICS_DIR"
+  # Live mitlesbar unter images/running/buildinfo/ (wandert am Ende mit ins
+  # images-<ts>): Hardlinks auf CSV und Log, keine zweite Schreibstelle. Die
+  # Dateien werden vorher angelegt - der Collector oeffnet mit "w", die Shell
+  # mit ">", beides kuerzt dieselbe Inode, die Links bleiben gueltig. Geht das
+  # nicht (anderes Dateisystem), gibt es eben nur die Kopie am Ende.
+  : > "$METRICS_DIR/$BUILD_RUN_ID.csv"
+  : > "$METRICS_DIR/$BUILD_RUN_ID.log"
+  local LIVE="$SANDBOX_DIR/images/running/buildinfo"
+  if mkdir -p -- "$LIVE" 2>/dev/null; then
+    ln -f -- "$METRICS_DIR/$BUILD_RUN_ID.csv" "$LIVE/$BUILD_RUN_ID.metrics.csv" 2>/dev/null || true
+    ln -f -- "$METRICS_DIR/$BUILD_RUN_ID.log" "$LIVE/$BUILD_RUN_ID.collector.log" 2>/dev/null || true
+  fi
   python3 "$SANDBOX_DIR/scripts/buildcollect.py" \
     "$STATUS_DIR" "$METRICS_DIR/$BUILD_RUN_ID.csv" "$METRICS_DIR/$BUILD_RUN_ID.empfehlung.txt" \
     "$SANDBOX_DIR" "$WORKERS" "$BUILD_RUN_ID" "${#BUILD_TARGETS[@]}" \
@@ -2448,6 +2460,37 @@ print_run_summary ()
   echo "$BALKEN"
 }
 
+# Vervollstaendigt <images-dir>/buildinfo/: was man braucht, um einen Lauf zu
+# beurteilen, ohne auf dem Buildhost suchen zu muessen. Waehrend des Laufs
+# liegen dort schon CSV und Log des Collectors (live, siehe collector_start).
+# Alles klein (KB):
+#   <lauf>.empfehlung.txt   Empfehlung und Kennzahlen des Collectors
+#   <lauf>.collector.log    seine Ergebniszeile
+#   <lauf>.metrics.csv.gz   die 1-s-Proben (CPU, iowait, Platte, steal, Phasen)
+#   <lauf>.build-times.csv  die Schrittzeiten dieses Laufs aus BUILD_TIMES_FILE
+#   <lauf>.summary.txt      der Kasten vom Laufende (schreibt der Aufrufer)
+write_buildinfo ()
+{
+  # Nichts davon darf den fertigen Lauf noch scheitern lassen (errexit,
+  # pipefail): jeder Schritt ist optional.
+  local BI="$1/buildinfo" ID="$BUILD_RUN_ID"
+  mkdir -p -- "$BI" || return 0
+  if [ "$METRICS" = true ]; then
+    if [ -f "$METRICS_DIR/$ID.empfehlung.txt" ]; then cp -f -- "$METRICS_DIR/$ID.empfehlung.txt" "$BI/" || true; fi
+    # Log und CSV sind waehrend des Laufs als Hardlink schon da (collector_start).
+    if [ -f "$METRICS_DIR/$ID.log" ] && ! [ "$METRICS_DIR/$ID.log" -ef "$BI/$ID.collector.log" ]; then
+      cp -f -- "$METRICS_DIR/$ID.log" "$BI/$ID.collector.log" || true
+    fi
+    if [ -f "$METRICS_DIR/$ID.csv" ] && gzip -9c -- "$METRICS_DIR/$ID.csv" > "$BI/$ID.metrics.csv.gz"; then
+      rm -f -- "$BI/$ID.metrics.csv"
+    fi
+  fi
+  if [ -f "$BUILD_TIMES_FILE" ]; then
+    { head -n 1 -- "$BUILD_TIMES_FILE"; grep -- "^$ID," "$BUILD_TIMES_FILE" || true; } > "$BI/$ID.build-times.csv" || true
+  fi
+  return 0
+}
+
 build_all_images ()
 {
   local -a TARGETS=( "${BUILD_TARGETS[@]}" )
@@ -2572,7 +2615,10 @@ build_all_images ()
     echo "- Packages dir: images-$DATE_SUFFIX/packages"
   fi
 
-  print_run_summary "./images/images-$DATE_SUFFIX" "$RUN_SECONDS"
+  write_buildinfo "./images/images-$DATE_SUFFIX"
+  # Kasten auch nach buildinfo/; scheitert das Schreiben, bleibt er auf dem Schirm.
+  print_run_summary "./images/images-$DATE_SUFFIX" "$RUN_SECONDS" \
+    | { tee "./images/images-$DATE_SUFFIX/buildinfo/$BUILD_RUN_ID.summary.txt" 2>/dev/null || cat; }
   if (( ${#DEGRADIERT[@]} > 0 )); then
     fat_warning "Dieser Lauf lief NICHT wie konfiguriert:" "${DEGRADIERT[@]}"
   fi
