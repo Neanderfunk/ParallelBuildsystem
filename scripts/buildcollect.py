@@ -26,6 +26,13 @@ ueber alle Proben mit mindestens einem Worker im Imagebau und niemandem in
 golden/prepare. 6 Worker, im Mittel 4,6 belegt = 4,6 Erl. Die Luecke zur
 Worker-Zahl ist Hochfahren (Startversatz) und Auslaufen der Warteschlange.
 
+Steal time (Spalte "steal", Kerne): Zeit, in der der Hypervisor die vCPUs
+des Gastes anderen Lasten gegeben hat. Der Gast sieht diese Lasten sonst
+nicht - auf wir-horst (KVM-Gast) eine Quelle fuer Streuung zwischen Laeufen.
+"aktiv" enthaelt steal weiterhin (wie iowait), die Werte bleiben mit
+frueheren Laeufen vergleichbar; steal wird nur ausgewiesen, nicht in die
+Empfehlung eingerechnet.
+
 Die Empfehlung ist gedaempft und begrenzt: hoechstens ein Worker mehr oder
 weniger je Lauf, nie unter 1, nie ueber die halbe Kernzahl. Ein Regler, der
 auf einem einzigen Lauf um mehrere Stufen springt, schwingt sich auf.
@@ -81,8 +88,11 @@ def blockgeraet(p):
 DEV = blockgeraet(pfad)
 
 def cpu():
+    """Summenzeile aus /proc/stat: user nice system idle iowait irq softirq
+    steal guest guest_nice. guest ist in user schon enthalten - nur die ersten
+    acht Felder zaehlen, sonst stuende Gastzeit doppelt in der Summe."""
     with open("/proc/stat") as f:
-        return [int(x) for x in f.readline().split()[1:]]
+        return [int(x) for x in f.readline().split()[1:9]]
 
 def disk():
     if not DEV:
@@ -117,7 +127,7 @@ def phasen():
 proben = []
 c0, d0, t0 = cpu(), disk(), time.time()
 with open(out_csv, "w") as csv:
-    csv.write("epoch,aktiv,iowait,util,schreib_mb,iops,prepare,golden,build,finalize\n")
+    csv.write("epoch,aktiv,iowait,util,schreib_mb,iops,prepare,golden,build,finalize,steal\n")
     while laufen:
         time.sleep(INTERVALL)
         c1, d1, t1 = cpu(), disk(), time.time()
@@ -129,6 +139,7 @@ with open(out_csv, "w") as csv:
             continue
         aktiv = (1 - dc[3] / ges) * KERNE
         iow = (dc[4] / ges) * KERNE
+        steal = (dc[7] / ges) * KERNE if len(dc) > 7 else 0.0
         if d1 and d0:
             iops = ((d1[0] - d0[0]) + (d1[1] - d0[1])) / dt
             schreib = (d1[2] - d0[2]) * 512 / 1048576 / dt
@@ -136,10 +147,10 @@ with open(out_csv, "w") as csv:
         else:
             iops = schreib = util = 0.0
         n = phasen()
-        proben.append((aktiv, iow, util, n))
-        csv.write("%.1f,%.2f,%.2f,%.1f,%.1f,%.0f,%d,%d,%d,%d\n" % (
+        proben.append((aktiv, iow, util, n, steal))
+        csv.write("%.1f,%.2f,%.2f,%.1f,%.1f,%.0f,%d,%d,%d,%d,%.2f\n" % (
             t1, aktiv, iow, util, schreib, iops,
-            n["prepare"], n["golden"], n["build"], n["finalize"]))
+            n["prepare"], n["golden"], n["build"], n["finalize"], steal))
         csv.flush()
         c0, d0, t0 = c1, d1, t1
 
@@ -151,6 +162,12 @@ voll = [p for p in proben
 parallel = [p[3]["build"] for p in proben
             if p[3]["build"] > 0 and p[3]["golden"] == 0 and p[3]["prepare"] == 0]
 erlang = statistics.mean(parallel) if parallel else 0.0
+
+# Steal time ueber die Parallelphase (dieselben Proben wie Erlang)
+steal_par = [p[4] for p in proben
+             if p[3]["build"] > 0 and p[3]["golden"] == 0 and p[3]["prepare"] == 0]
+steal_mittel = statistics.mean(steal_par) if steal_par else 0.0
+steal_max = max(steal_par) if steal_par else 0.0
 
 def p95(w):
     s = sorted(w)
@@ -168,7 +185,8 @@ else:
     M = statistics.mean(p[2] for p in voll)
     U = p95([p[2] for p in voll])
     werte = {"cpu_auslastung": "%.2f" % A, "iowait_kerne": "%.2f" % I,
-             "platte_util_mittel": "%.1f" % M, "platte_util_p95": "%.1f" % U}
+             "platte_util_mittel": "%.1f" % M, "platte_util_p95": "%.1f" % U,
+             "steal_kerne_alle_belegt": "%.2f" % statistics.mean(p[4] for p in voll)}
     if I > IOWAIT_ZU_HOCH or M > UTIL_ZU_HOCH:
         empfohlen = wirksam - 1
         grund = ("die Platte ist der Engpass (iowait %.2f Kerne, Platte im Mittel "
@@ -203,12 +221,14 @@ with open(emp_file + ".tmp", "w") as f:
     f.write("proben_alle_belegt=%d\n" % len(voll))
     f.write("worker_erlang=%.2f\n" % erlang)
     f.write("worker_erlang_proben=%d\n" % len(parallel))
+    f.write("steal_kerne_mittel=%.2f\n" % steal_mittel)
+    f.write("steal_kerne_max=%.2f\n" % steal_max)
     for k, v in werte.items():
         f.write("%s=%s\n" % (k, v))
     f.write("begruendung=%s\n" % grund)
 os.replace(emp_file + ".tmp", emp_file)
-print("buildcollect: %d Proben, %d mit allen %d Workern belegt%s, Parallelphase %.1f Erl "
-      "-> empfohlen %d (%s)" % (len(proben), len(voll), wirksam,
-                                " (%d konfiguriert, %d Targets)" % (workers, targets)
-                                if wirksam < workers else "",
-                                erlang, geklemmt, grund))
+print("buildcollect: %d Proben, %d mit allen %d Workern belegt%s, Parallelphase %.1f Erl, "
+      "steal %.2f Kerne (max %.1f) -> empfohlen %d (%s)" % (
+          len(proben), len(voll), wirksam,
+          " (%d konfiguriert, %d Targets)" % (workers, targets) if wirksam < workers else "",
+          erlang, steal_mittel, steal_max, geklemmt, grund))
