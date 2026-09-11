@@ -227,7 +227,10 @@ Später Geladenes gewinnt.
 - Fingerabdruck des Laufs über: BUILD_ORDER, Targets, Domains, alle
   Konfigurationen inkl. `build.local.conf`, Sites-Datei, `templates/` und
   `patches/` (sha256). Weicht er bei `--resume` ab → Abbruch, denn eine
-  Fortsetzung mit anderen Eingaben ist keine.
+  Fortsetzung mit anderen Eingaben ist keine. Typischer Fall: `git pull`
+  zwischen Abbruch und `--resume`. Die Meldung nennt `--restart` als Ausweg.
+  Automatisch fällt `--resume` bewusst **nicht** darauf zurück, weil das
+  womöglich Stunden fertiger Images wegwerfen würde.
 - `--resume` übernimmt SBRANCH, Ausgabeverzeichnis und Site-Version aus der
   Zustandsdatei – ein Lauf, **ein** Release-String.
 - Was einen Abbruch überlebt:
