@@ -1305,7 +1305,7 @@ state_resume ()
   STATE_FILE="$RUNNING_DIR/.build-state"
 
   if [ ! -f "$STATE_FILE" ]; then
-    abort "\"$RUNNING_DIR\" exists, but without a state file: it comes from a run of an older build.sh that had no resume support. Remove the directory and build afresh."
+    abort "\"$RUNNING_DIR\" exists, but without a state file: it comes from a run of an older build.sh that had no resume support. Start afresh with --restart, or remove the directory by hand."
   fi
 
   local OLD_FINGERPRINT NEW_FINGERPRINT
@@ -1313,7 +1313,7 @@ state_resume ()
   NEW_FINGERPRINT="$(build_fingerprint)"
 
   if [ "$OLD_FINGERPRINT" != "$NEW_FINGERPRINT" ]; then
-    abort "This run cannot be resumed: the inputs have changed since it was interrupted - the templates, the patches, one of the configuration files, or the target or domain list. Images built from two different sources do not belong under one manifest. Remove \"$RUNNING_DIR\" and build afresh."
+    abort "This run cannot be resumed: the inputs have changed since it was interrupted - the templates, the patches, one of the configuration files, or the target or domain list. Images built from two different sources do not belong under one manifest. Start afresh with --restart (it removes \"$RUNNING_DIR\" and reports what gets thrown away), or remove the directory by hand."
   fi
 
   SBRANCH="$(sed -n 's/^sbranch=//p' "$STATE_FILE")"
