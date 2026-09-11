@@ -361,7 +361,11 @@ build.sh (Hauptprozess, eigene UID)
 ### 7.6 Collector und WORKERS=auto
 
 - `scripts/buildcollect.py` läuft neben dem Lauf, 1 Probe/s:
-  aktive Kerne, iowait, Plattenauslastung, Phase
+  aktive Kerne, iowait, Plattenauslastung, Phase, **steal time**
+- steal time: Zeit, die der Hypervisor den vCPUs für andere Lasten entzieht.
+  Das ist das Einzige, was ein KVM-Gast wie wir-horst davon sieht. Sie wird nur
+  ausgewiesen (Ergebniszeile, `steal_kerne_*` in `empfehlung.txt`, CSV-Spalte
+  `steal`), nicht in die Empfehlung eingerechnet
 - Ausgewertet **nur** Proben, in denen alle Worker im Imagebau belegt sind
   (Hoch-/Auslaufen sagt nichts über freie Kapazität), mindestens 300 Proben
 - Regeln:
@@ -630,8 +634,9 @@ Collectors.
   (11 %) Luft zeigen. Die Ursache ist nicht gemessen. wir-horst ist ein
   KVM-Gast; andere Lasten auf dem Hypervisor sieht der Gast nicht, sie
   erklären also einen Teil der Streuung zwischen Läufen. Einsehen ließe
-  sich das, am Ergebnis ändert es aber wenig. Von innen sichtbar wäre höchstens die
-  steal time (`/proc/stat`), die der Collector bisher nicht erfasst.
+  sich das, am Ergebnis ändert es aber wenig. Von innen sichtbar ist nur die steal time.
+  Der Collector erfasst sie seit `buildcollect` mit steal-Spalte (7.6), und der
+  nächste Lauf zeigt, ob sie eine Rolle spielt.
 - `SPACE_UNIT_MB` als Mittel über alle Targets unterschätzt Läufe mit großen
   Targets (8.5). Eine Größe je Target wäre genauer.
 - Log eines gescheiterten Schritts geht beim `--resume` verloren
