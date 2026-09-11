@@ -390,7 +390,16 @@ build.sh (Hauptprozess, eigene UID)
 ### 7.6 Collector und WORKERS=auto
 
 - `scripts/buildcollect.py` läuft neben dem Lauf, 1 Probe/s:
-  aktive Kerne, iowait, Plattenauslastung, Phase, **steal time**
+  aktive Kerne, iowait, Plattenauslastung, Phase, **steal time**,
+  **laufende und blockierte Prozesse**, **PSI** (cpu, io, memory)
+- running/blocked (`/proc/stat`) und PSI (`/proc/pressure/*`, Anteil der Zeit
+  mit Warten zwischen zwei Proben) zeigen, was die mittlere CPU verdeckt:
+  - hoher `psi_cpu`, `running` weit über der Kernzahl → Überbelegung
+    (zu viele make-Jobs, `MAKE_J_*`)
+  - hoher `psi_io`/`psi_io_full`, viele `blocked` → I/O-Stau (overlayfs
+    copy-up, Writeback)
+  - ausgewiesen als `*_mittel` (Parallelphase), `*_alle_belegt` und
+    `blocked_max`, noch nicht in der Empfehlung
 - steal time: Zeit, die der Hypervisor den vCPUs für andere Lasten entzieht.
   Das ist das Einzige, was ein KVM-Gast wie wir-horst davon sieht. Sie wird nur
   ausgewiesen (Ergebniszeile, `steal_kerne_*` in `empfehlung.txt`, CSV-Spalte
@@ -660,7 +669,12 @@ Collectors.
   lohnt: dessen Targets verteilen. Das ist nicht trivial, weil alle in
   denselben lowerdir bauen.
 - Ein Bauschritt wird unter Last 1,7× langsamer, obwohl CPU (46 %) und Platte
-  (11 %) Luft zeigen. Die Ursache ist nicht gemessen. wir-horst ist ein
+  (11 %) Luft zeigen. Stichprobe während Lauf 3 (11.09. ~17:20, 6 Worker,
+  8 Targets): Load 48 bei 22 % CPU. vmstat: `r` zwischen 13 und 95 (!),
+  `sy` bis 30 %, `wa` ~1 %. PSI io `full` avg300 23 %, avg10 0,4 %; PSI cpu
+  `some` avg300 12 %. Es gibt also beides in Schüben: CPU-Überbelegung (jeder
+  Worker baut mit `-j` = Kerne × 2) und I/O-Stau. Der Collector misst das
+  seit der PSI-Erweiterung je Lauf. Die Ursache ist nicht gemessen. wir-horst ist ein
   KVM-Gast; andere Lasten auf dem Hypervisor sieht der Gast nicht, sie
   erklären also einen Teil der Streuung zwischen Läufen. Einsehen ließe
   sich das, am Ergebnis ändert es aber wenig. Von innen sichtbar ist nur die steal time.
