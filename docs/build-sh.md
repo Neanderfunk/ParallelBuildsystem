@@ -329,11 +329,17 @@ build-times.csv                     Zeiten aller Läufe
 ### 7.2 Ablauf
 
 1. **golden tree** sicherstellen (7.3)
-2. Warteschlange aller Targets; bis zu `WORKERS` gleichzeitig,
-   Start im Abstand von `WORKER_START_DELAY`
-3. Jeder Worker: **ein Target über alle Domains**, in seinem Overlay
-4. Worker fertig → Overlay verwerfen, nächstes Target starten
-5. Alle fertig → Abschluss aller Domains seriell im Hauptprozess (4.4)
+2. Warteschlange aller Targets, **die längsten zuerst** (Mittel der
+   Bauschritte je Target im jüngsten früheren Lauf laut `build-times.csv`,
+   Targets ohne Vorgeschichte vorn); bis zu `WORKERS` gleichzeitig, Start im
+   Abstand von `WORKER_START_DELAY`. Die Reihenfolge steht im Log
+3. `make -j` je Worker: Kerne × `MAKE_J_FACTOR` **geteilt durch die Zahl
+   gleichzeitig möglicher Worker**, mindestens 2 (wir-horst, 6 Worker:
+   `-j 12` statt 72). Der golden tree im Hauptprozess baut mit dem vollen
+   Wert. Ein ausdrückliches `MAKE_J_VAL` gilt unverändert
+4. Jeder Worker: **ein Target über alle Domains**, in seinem Overlay
+5. Worker fertig → Overlay verwerfen, nächstes Target starten
+6. Alle fertig → Abschluss aller Domains seriell im Hauptprozess (4.4)
 
 - `BUILD_ORDER` aus der Konfiguration gilt hier nicht (intern `parallel`);
   sie greift wieder beim Rückfall auf seriell.
@@ -411,7 +417,7 @@ build.sh (Hauptprozess, eigene UID)
 | Befund | Empfehlung |
 |---|---|
 | iowait > 1 Kern im Mittel oder Platte > 50 % | einen Worker weniger |
-| CPU < 65 % | einen Worker mehr |
+| CPU < 65 % | einen Worker mehr – oder gleich so viele, dass eine **Welle** wegfällt (T Targets auf W Worker = ⌈T/W⌉ Wellen; 8 Targets: 6 → 8) |
 | sonst / zu wenig Proben | unverändert |
 
 - gedämpft ±1 je Lauf, begrenzt auf 1 … Kerne/2
@@ -713,13 +719,10 @@ x86-generic), `WORKERS=6`. Die Auswertung stammt erstmals aus `buildinfo/`
   nächste Lauf zeigt, ob sie eine Rolle spielt.
 - `SPACE_UNIT_MB` als Mittel über alle Targets unterschätzt Läufe mit großen
   Targets (8.5). Eine Größe je Target wäre genauer.
-- **Wellen:** Die Worker-Zahl sollte die Zahl der Wellen (Targets ÷ Worker,
-  aufgerundet) senken, nicht einfach +1 sein (Lauf 3). Bei ungleich großen
-  Targets hilft zusätzlich eine Warteschlange, die die längsten zuerst
-  startet. Die Dauern dafür liegen schon in `build-times.csv`.
-- `-j` je Worker = Kerne × `MAKE_J_FACTOR`, unabhängig von der Worker-Zahl.
-  Das ist ein Kandidat für die Schübe mit `r` bis 95. Zuerst messen (PSI im
-  nächsten Lauf), dann `MAKE_J_VAL` probieren.
+- Nach Lauf 3 umgesetzt, noch ohne Messung im echten Parallellauf:
+  Empfehlung nach Wellen (7.6), die längsten Targets zuerst und `-j` je
+  Worker geteilt (7.2). Der nächste Lauf auf wir-horst zeigt die Wirkung;
+  zum Vergleich stellt `MAKE_J_VAL=72` das alte `-j` wieder her.
 - Log eines gescheiterten Schritts geht beim `--resume` verloren
   (liegt ungepackt in `assembled/`).
 - Abschluss aller Domains erst am Ende des Parallellaufs – die Site-Verzeichnisse
