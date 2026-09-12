@@ -834,7 +834,38 @@ Beide Läufe mit denselben 9 Domains × 9 Targets (dazu mpc85xx-p1020) und
 - Empfehlung in beiden Läufen **9** („1 statt 2 Wellen“). Gemessen ist das
   noch nicht, beide Läufe hatten `WORKERS=6`.
 - Der englische Bericht [`parallel-builds/`](parallel-builds/) fasst die
-  Messungen zusammen und enthält die Rohdaten der Läufe 3–6.
+  Messungen zusammen und enthält die Rohdaten der Läufe 3–7.
+
+#### Lauf 7 (12.09.2026, `26091213bro`): 9 Worker, eine Welle, golden wiederverwendet
+
+48 Domains × 9 Targets = 432 Bauschritte, `WORKERS=auto` → 9 Worker, ohne
+Pull nach Lauf 6 gestartet.
+
+| | Lauf 7 |
+|---|---|
+| ganzer Lauf | 562 min (9 h 22 min) |
+| prepare / golden tree | 0 / 0 min (Fingerabdruck passte) |
+| Parallelphase | 550 min / 432 Schritte |
+| je Folgedomain / je Variante | 14,9 / 11,5 min (Lauf 5/6: 17,9 / 15,7) |
+| Erlang (CSV) | 7,2 von 9 |
+| mittlerer Schritt | 549 s (Lauf 5/6: 465–472 s) |
+| alle 9 Worker belegt | 274 min, CPU dabei 54 % |
+
+- **golden-Wiederverwendung wirkt:** kein prepare, kein golden-Schritt, der
+  Lauf besteht nur aus Parallelphase und finalize (11 min).
+- **Eine Welle:** 47 statt 35 Schritte pro Stunde (+36 %) gegenüber 6
+  Workern. Jeder Schritt wird dabei länger (549 statt ~470 s).
+- **Schwanz:** Die acht kürzeren Targets waren zwischen Minute 423 und 492
+  fertig, ath79-generic lief die letzten 58 min allein.
+- **Schrittdauer hängt an der Zahl gleichzeitiger Worker:** relativ zur
+  Volllast 0,92 (7 Worker), 0,82 (5), 0,70 (4), 0,59 (2), **0,54 (1)**.
+  ath79-generic: ~12,3 min je Schritt mit 9 Workern, 6,7 min allein. Die
+  Raumtemperatur am Rack blieb dabei konstant bei 32,3 °C, ein Abend-Effekt
+  ist es also nicht. Kandidaten bleiben Takt (Temperaturzone 0 von pepm1
+  unter Last bei 88–89 °C) und Platte (util p95 92 %).
+- Collector-Empfehlung **10**; wirkt erst bei mehr als 9 Targets. Nächster
+  Hebel wäre ein zweiter Worker für ath79-generic (Domains oder Geräte
+  teilen), ungetestet.
 
 ### 8.8 Multidomain (Einordnung)
 
