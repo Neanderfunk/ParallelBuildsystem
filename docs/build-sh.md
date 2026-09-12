@@ -776,6 +776,33 @@ Warteschlange nach Dauer und mit PSI im Collector.
   (wir-horst: 113 GB RAM, 8 Worker ~25 GB). Das braucht user-xattrs auf
   tmpfs, hängt also vom Kernel ab.
 
+#### Lauf 5 und 6 (12.09.2026, `26091123bro` und `26091206bro`): Wiederholung
+
+Beide Läufe mit denselben 9 Domains × 9 Targets (dazu mpc85xx-p1020) und
+`WORKERS=6`. Lauf 5 lief nach einem Netzausfall per `--resume` weiter.
+
+| | Lauf 5 | Lauf 6 |
+|---|---|---|
+| ganzer Lauf | 229 min (ab Resume) | 247 min |
+| golden tree | 82 min (7 von 9 Schritten) | 100 min |
+| Parallelphase | 126 min / 72 Schritte | 125 min / 72 Schritte |
+| je Folgedomain | 18,0 min | 17,8 min |
+| Erlang (Kasten / Collector) | 4,50 / 4,67 | 4,47 / 4,56 |
+| ≤ 3 Worker belegt | 40 min | 45 min |
+
+- **Wiederholbar:** Auf Laufebene weichen die Werte um ~1 % ab, je Target
+  die mittlere Schrittzeit bis ±10 % (ath79-generic 648 gegen 595 s).
+- **Zwei Wellen, wie erwartet:** LPT legt die drei kürzesten Targets
+  (mt7622, x86-generic, p1020) in die zweite Welle; die läuft trotzdem ~50 min
+  mit höchstens 3 Workern.
+- **Untergrenze der Parallelphase ist das längste Target:** ath79-generic,
+  86–95 min. Mit 9 Workern in einer Welle ginge die Phase bestenfalls von
+  125 auf ~90 min herunter, sofern der Faktor 1,7 nicht wächst.
+- Empfehlung in beiden Läufen **9** („1 statt 2 Wellen“). Gemessen ist das
+  noch nicht, beide Läufe hatten `WORKERS=6`.
+- Der englische Bericht [`parallel-builds/`](parallel-builds/) fasst die
+  Messungen zusammen und enthält die Rohdaten der Läufe 3–6.
+
 ### 8.8 Multidomain (Einordnung)
 
 - Kosten hängen an der **Zahl der Images**, nicht an der Zahl der Domains darin.
