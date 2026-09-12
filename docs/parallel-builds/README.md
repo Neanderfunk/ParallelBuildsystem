@@ -27,9 +27,8 @@ September 2026.
 
 A Freifunk community builds its Gluon firmware once per *site variant*:
 one mesh domain, with or without pre-installed SSH keys. Neanderfunk has
-86 such variants for 22 OpenWrt targets. Built serially, that is about
-**138 hours**, which is too long to ship a security fix in a reasonable
-time.
+86 such variants for 22 OpenWrt targets. Built serially, that takes about
+**138 hours**, so a security update waits almost a week for its images.
 
 What we found:
 
@@ -39,9 +38,11 @@ What we found:
 2. **A serial build leaves the machine idle.** After the first domain, the
    build keeps a median of 1.3 of 36 cores busy (8 % utilisation). It is not
    I/O bound (iowait ≈ 0). More cores would not help at all.
-3. **A read-only "golden tree" plus one kernel overlayfs per worker** turns a
-   170-min per-run base cost into a one-second mount. The overlay costs no
-   measurable build time. It works **rootless**, via two user namespaces.
+3. **A read-only "golden tree" plus one kernel overlayfs per worker.** The
+   170-min base cost is paid only when the inputs change, not every run.
+   Each worker starts from the golden tree with a mount that takes no
+   measurable time, and the overlay costs no measurable build time. It works
+   **rootless**, via two user namespaces.
 4. **Parallelise along the target axis, not the domain axis.** A worker that
    builds one target for all domains needs ~11 GB of overlay; one that builds
    one domain for all targets would need ~62 GB.
@@ -134,8 +135,9 @@ Sampled once per second on wir-horst (36 vCPU), serial build:
 | first domain (compiling + images) | 14.4 | 5.6 | 36 | 40 % | writes up to 1.6 GB/s, %util p95 100 |
 | follow-up domain (images only) | 2.9 | **1.3** | 12 | **8 %** | %util mean 9.6, p95 100 |
 
-- The load is **bimodal**: long single-threaded stretches (image assembly,
-  `mksquashfs` per device, checksums) and short full-load bursts.
+- The load is **bimodal**: long stretches on one or two cores, and short
+  full-load bursts. Our reading, not measured per process: the per-device
+  image steps run one after another.
 - The build spends 88 % of the time on fewer than 4 cores. iowait is ≈ 0,
   and on the local host there were only 130 write IOPS.
 - `make -j` only helps *inside* one target, and Gluon builds one target per
@@ -165,9 +167,19 @@ run may reuse it:
 - the host gcc and libc versions
 - the SHA-256 of all patches and common template files
 
-If the fingerprint matches, prepare is skipped entirely. The fingerprint
-file is deleted before a rebuild, so an interrupted rebuild never counts as
-valid.
+If the fingerprint matches, prepare is skipped entirely and the tree is not
+touched at all. Re-applying the patches, even with identical content, would
+renew the modification times of the patched files. OpenWrt partly decides
+rebuilds by modification time, so such a tree would no longer be golden.
+
+The fingerprint deliberately errs on the side of a rebuild. An unnecessary
+rebuild costs as much as a serial run always did. A missed input would
+silently produce images from stale sources. Only the domain selection and
+the per-domain site files are left out, because they only reach
+`gluon-site`, which is built per domain anyway.
+
+The fingerprint file is deleted before a rebuild, so an interrupted rebuild
+never counts as valid.
 
 ### 4.2 One overlay per worker, at the original path
 
@@ -221,7 +233,8 @@ discarded and the next target starts. The reasons:
   against ~62 GB on the domain axis, where each step pays the 2.8 GB again.
 - `.config` is rewritten 22 times instead of ~1,900 times.
 
-Scheduling details, each added after a measurement (section 6):
+Scheduling details (the first two were added after runs 1–3, see
+section 6):
 
 - **Longest target first.** The queue is ordered by the mean step time of
   each target in the previous run (LPT scheduling).
@@ -282,7 +295,8 @@ less the more domains there are.
 
 **Repeatability.** Runs 5 and 6 used the same domains, targets and worker
 count, a few hours apart. The only difference was the firmware content:
-new config-mode packages and patches, which change no build step.
+new config-mode packages and patches, which add a few small files to each
+image.
 
 | | Run 5 | Run 6 |
 |---|---|---|
@@ -385,8 +399,10 @@ at most 3 workers.
 ### 6.4 The golden tree is now the largest item
 
 For few domains, the serial golden tree dominates: 44–58 % of runs 2–4. It
-disappears completely when the fingerprint matches, e.g. for a re-run with
-new domains or site changes only. Parallelising the golden tree itself is
+disappears completely when the fingerprint matches, e.g. when a run only
+builds a different selection of domains. Runs 1–6 all rebuilt it: prepare
+and golden appear in every run. Reuse has not been measured on wir-horst
+yet. Parallelising the golden tree itself is
 harder, because all targets build into the same tree.
 
 ---
@@ -506,8 +522,8 @@ must not end up under one signed manifest.
   - `*.metrics.csv.gz`: collector samples, one per second
   - `*.empfehlung.txt`: the recommendation for the next run
   - `*.summary.txt`: the summary box
-- [`analyse.py`](analyse.py) reproduces the per-run numbers of sections 5
-  and 6:
+- [`analyse.py`](analyse.py) reproduces the numbers of sections 5 and 6 for
+  runs 3–6:
 
   ```bash
   python3 docs/parallel-builds/analyse.py docs/parallel-builds/data/*/
