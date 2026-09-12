@@ -552,6 +552,36 @@ build.sh (Hauptprozess, eigene UID)
 - wir-horst: overlay-Modul war anfangs nicht geladen, jetzt über
   `modules-load.d` dauerhaft.
 
+### 7.10 Build-Monitor
+
+`scripts/buildmonitor.py` zeigt einen laufenden Lauf live im Terminal, im
+Stil von btop: Kästen, scrollende Graphen, passt sich der Terminalgröße an.
+Nur Python-Standardbibliothek (ab 3.12, also Ubuntu 24.04), keine
+Zusatzpakete.
+
+```
+scripts/buildmonitor.py                      # auf dem Buildhost, im Buildverzeichnis
+scripts/buildmonitor.py --url https://imageslive.ffdus.de/images2023.2ad
+scripts/buildmonitor.py --once --size 160x50 # ein Bild auf stdout
+```
+
+- Kopf: Release, Phase, ETA, Laufzeit, Umfang, Worker, Erlang,
+  Fortschrittsbalken
+- CPU (belegte Kerne, lokal auch je Kern), PSI und Speicher (Dirty,
+  Writeback), Schreibrate und %util der Platte, belegte Worker
+- Worker: Target, Domain, Schrittzeit gegen das Mittel, Fortschritt, Rest,
+  letzte Logzeile
+- Matrix Domains × Targets (fertig / läuft / offen), zuletzt fertige
+  Schritte mit Dauer
+- ETA: Schrittmittel je Target aus diesem Lauf, sonst aus dem vorigen,
+  verteilt auf die Worker wie die Warteschlange (längste zuerst)
+- Tasten: `q` Ende, `+`/`-` Intervall (Standard 2 s, aus der Ferne 5 s),
+  Leertaste sofort neu
+- Lokal kommen CPU, PSI, Speicher und Platte aus `/proc`, aus der Ferne aus
+  dem Collector-CSV (per HTTP Range). Aus der Ferne fehlen die Logzeilen
+  der Worker, und Schrittzeiten gibt es erst nach dem ersten Domainwechsel
+  eines Workers.
+
 ---
 
 ## 8. Messwerte und Abschätzungen
