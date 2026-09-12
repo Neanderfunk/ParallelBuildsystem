@@ -1585,10 +1585,12 @@ net_retry ()
       break
     fi
 
+    # Nur der erste Treffer: -m1 begrenzt die Zeilen, -o liefert aber jeden
+    # Treffer darin ("fatal: unable to access ...: Could not resolve host").
     if [ -n "$LOG" ]; then
-      SEEN="$(tail -c +"$(( OFF + 1 ))" -- "$LOG" 2>/dev/null | grep -m1 -oE "$NET_ERROR_REGEX" || true)"
+      SEEN="$(tail -c +"$(( OFF + 1 ))" -- "$LOG" 2>/dev/null | grep -m1 -oE "$NET_ERROR_REGEX" | head -n1 || true)"
     else
-      SEEN="$(grep -m1 -oE "$NET_ERROR_REGEX" -- "$CAP" || true)"
+      SEEN="$(grep -m1 -oE "$NET_ERROR_REGEX" -- "$CAP" | head -n1 || true)"
     fi
 
     if [ -z "$SEEN" ] && net_ok; then
