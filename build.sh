@@ -39,6 +39,12 @@ on_error ()
 {
   local -i EXIT_CODE="$?"
   local SIGNAL_HINT=""
+  # Mit errtrace loest schon ein "return N" in einer Funktion den Trap aus und
+  # dann noch einmal deren Aufruf. Die Meldung beim Aufrufer ist die
+  # aussagekraeftige, die hier waere doppelt.
+  case "$BASH_COMMAND" in
+    return\ *) return 0 ;;
+  esac
   if (( EXIT_CODE > 128 )); then
     SIGNAL_HINT=" (Signal $(( EXIT_CODE - 128 )): $(kill -l $(( EXIT_CODE - 128 )) 2>/dev/null || echo unbekannt))"
   fi
@@ -558,8 +564,16 @@ set_config_defaults ()
   DISK_FULL_MB=1024
 
   # Quellen vorab holen, mit Wiederholung. 0 Versuche schaltet den Schritt ab.
+  # Die Wiederholungen gelten auch fuer jeden anderen Schritt mit Netzfehler,
+  # siehe net_retry.
   DOWNLOAD_ATTEMPTS=5
   DOWNLOAD_RETRY_DELAY=30
+
+  # Schlafmodus bei Netzausfall, siehe net_retry: alle NET_WAIT_INTERVAL
+  # Sekunden pruefen, nach NET_WAIT_MAX aufgeben. 0 schaltet ihn ab.
+  NET_WAIT_INTERVAL=600
+  NET_WAIT_MAX=7200
+  NET_CHECK_HOST="github.com"
 
   DATE_SUFFIX_FORMAT="+%s"
   SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
@@ -732,7 +746,8 @@ preflight_check ()
   # Was build.sh und seine Helfer (esign, prepare.sh, lib-patch.sh) direkt
   # aufrufen.
   for WERKZEUG in git make patch sed grep awk find xargs cp rsync sort tee \
-                  date stat mktemp gzip sha256sum getconf sync df tail; do
+                  date stat mktemp gzip sha256sum getconf sync df tail \
+                  getent timeout; do
     command -v "$WERKZEUG" >/dev/null 2>&1 || FEHLT+=( "$WERKZEUG" )
   done
 
@@ -837,7 +852,9 @@ ensure_gluon_tree ()
   fi
 
   echo "No Gluon tree yet - cloning $REPO (branch $BRANCH) into \"$DIR\" ..."
-  git clone --branch "$BRANCH" -- "$REPO" "$DIR" \
+  local CMD
+  printf -v CMD "git clone --branch %q -- %q %q"  "$BRANCH"  "$REPO"  "$DIR"
+  net_retry "git clone gluon" "$CMD" \
     || abort "Cloning Gluon failed (git clone --branch $BRANCH $REPO). Check the network, or clone it by hand into \"$DIR\"."
 }
 
@@ -1466,6 +1483,188 @@ state_has ()
 }
 
 
+# Woran ein Netzproblem in der Ausgabe eines Schritts zu erkennen ist: curl,
+# wget, git, OpenWrts download.pl und der Resolver.
+NET_ERROR_REGEX='Could not resolve host|Temporary failure in name resolution|unable to resolve host address|Name or service not known|No address associated with hostname|Network is unreachable|Connection timed out|Failed to connect to|fatal: unable to access|Could not read from remote repository|No more mirrors to try|Download failed'
+
+# Sekunden, die der letzte net_retry-Aufruf mit Warten verbracht hat. Der
+# Bauschritt zieht sie von seiner Bauzeit ab, sonst stuende ein Schlaf in
+# BUILD_TIMES_FILE und verzerrte Warteschlange und Empfehlung.
+NET_RETRY_WAITED=0
+
+# Ist das Netz da? Namensaufloesung UND eine TCP-Verbindung zu NET_CHECK_HOST.
+# Die Aufloesung allein genuegt nicht: faellt die Leitung hinter dem Router
+# aus, antwortet dessen DNS-Cache oft noch eine Weile.
+net_ok ()
+{
+  getent hosts "$NET_CHECK_HOST" >/dev/null 2>&1 &&
+    timeout 15 bash -c ': < "/dev/tcp/$1/443"' _ "$NET_CHECK_HOST" >/dev/null 2>&1
+}
+
+# Meldung von net_retry. Mit Uhrzeit, weil sie ausserhalb von timestamp_lines
+# steht, und beim Bauschritt zusaetzlich in dessen Log, damit dort sichtbar
+# ist, warum make mehrfach anlaeuft. LOG kommt aus net_retry.
+net_say ()
+{
+  echo "[$(date +%H:%M:%S)] $*"
+  if [ -n "${LOG:-}" ]; then
+    echo "[$(date +%H:%M:%S)] build.sh: $*" >> "$LOG"
+  fi
+}
+
+# Fuehrt einen Schritt aus, der am Netz haengt, und uebersteht einen
+# Netzausfall.
+#
+#   net_retry <beschreibung> <befehl> [<logdatei>]
+#
+# <befehl> laeuft per eval in einer Subshell mit errexit. Ohne <logdatei>
+# faengt net_retry die Ausgabe selbst mit. Mit <logdatei> schreibt der Befehl
+# selbst dorthin (der Bauschritt), durchsucht wird dann nur, was der jeweilige
+# Versuch angehaengt hat. Ein Befehl aus mehreren Schritten verlangt einen
+# Aufruf als einfache Anweisung, nicht hinter "if", "||" oder "&&": dort
+# ignoriert bash errexit auch in der Subshell, er liefe nach einem Fehler
+# weiter. Bei einem einzelnen Kommando ist "net_retry ... || abort" in Ordnung.
+#
+# Nach einem Fehler:
+#
+# 1. Steht kein Netzfehler in der Ausgabe und ist NET_CHECK_HOST erreichbar,
+#    gibt net_retry sofort auf. Ein Compilerfehler oder ein Patch, der nicht
+#    passt, wird durch Warten nicht besser.
+# 2. Sonst bis zu DOWNLOAD_ATTEMPTS Versuche im Abstand von
+#    DOWNLOAD_RETRY_DELAY, fuer den kurzen Aussetzer.
+# 3. Sind die verbraucht und ist das Netz wirklich weg, kommt der Schlafmodus:
+#    alle NET_WAIT_INTERVAL pruefen, ob es wieder da ist, und dann denselben
+#    Schritt erneut, mit frischen Versuchen. Nach NET_WAIT_MAX ab dem ersten
+#    Einschlafen gibt er auf. Gedacht fuer Bauarbeiten am Verteiler, einen
+#    abgeschalteten Switch oder eine Routingstoerung, die sind meist nach
+#    einer Stunde vorbei. Anlass war der 11.09.2026: ein nachtlicher Ausfall
+#    am Standort von wir-horst beendete den Lauf im golden tree.
+#    Ist das Netz dagegen da und der Schritt scheitert trotzdem immer wieder
+#    mit einem Netzfehler (Quelle weg, Hash passt nicht), hilft Warten nicht:
+#    Aufgabe nach den Versuchen aus 2.
+#
+# Wiederholen ist fuer alle Aufrufer unschaedlich: git clone raeumt hinter
+# sich auf, make update und make download setzen neu auf, und make baut ohnehin
+# nur, was noch fehlt - der Bauschritt macht dort weiter, wo er stand.
+#
+# Rueckgabe: 0 oder der Exitcode des letzten Versuchs.
+net_retry ()
+{
+  local DESC="$1" CMD="$2" LOG="${3:-}"
+  local CAP="" SEEN GRUND NETZ STATUS_FILE="" STATUS_SAVED=""
+  local -i attempt=0 rc=0 OFF=0 SLEEP_SINCE=0 REST SCHLAF
+
+  NET_RETRY_WAITED=0
+  if [ -z "$LOG" ]; then
+    CAP="$(mktemp)"
+  fi
+
+  while :; do
+    attempt+=1
+    if [ -n "$LOG" ]; then
+      OFF="$(stat -c %s -- "$LOG" 2>/dev/null || echo 0)"
+    fi
+
+    # ERR-Trap aus und errexit nur fuer den Befehl: ein gescheiterter Versuch
+    # soll den Lauf nicht beenden und auch nicht "Abbruch" melden. Nicht als
+    # "befehl || rc=$?": in einem ||-Zweig ignoriert bash errexit auch in allen
+    # Funktionen darunter, build_site_target liefe nach einem gescheiterten
+    # make einfach weiter.
+    trap - ERR
+    set +e
+    if [ -n "$LOG" ]; then
+      ( set -e; eval "$CMD" )
+    else
+      ( set -e; eval "$CMD" ) 2>&1 | tee -- "$CAP"
+    fi
+    rc=$?
+    set -e
+    trap on_error ERR
+
+    if (( rc == 0 )); then
+      break
+    fi
+
+    if [ -n "$LOG" ]; then
+      SEEN="$(tail -c +"$(( OFF + 1 ))" -- "$LOG" 2>/dev/null | grep -m1 -oE "$NET_ERROR_REGEX" || true)"
+    else
+      SEEN="$(grep -m1 -oE "$NET_ERROR_REGEX" -- "$CAP" || true)"
+    fi
+
+    if [ -z "$SEEN" ] && net_ok; then
+      net_say "$DESC: gescheitert (Exitcode $rc), kein Netzproblem - keine Wiederholung."
+      break
+    fi
+    GRUND="${SEEN:-$NET_CHECK_HOST nicht erreichbar}"
+
+    if (( attempt < DOWNLOAD_ATTEMPTS )); then
+      net_say "$DESC: Netzfehler ($GRUND), Versuch $attempt von $DOWNLOAD_ATTEMPTS - naechster in $DOWNLOAD_RETRY_DELAY s."
+      sleep "$DOWNLOAD_RETRY_DELAY"
+      NET_RETRY_WAITED=$(( NET_RETRY_WAITED + DOWNLOAD_RETRY_DELAY ))
+      continue
+    fi
+
+    if net_ok; then
+      net_say "$DESC: $attempt Versuche mit Netzfehler ($GRUND), obwohl $NET_CHECK_HOST erreichbar ist - Aufgabe, Warten hilft hier nicht."
+      break
+    fi
+
+    if (( NET_WAIT_MAX <= 0 )); then
+      net_say "$DESC: kein Netz ($GRUND), Schlafmodus abgeschaltet (NET_WAIT_MAX=$NET_WAIT_MAX) - Aufgabe."
+      break
+    fi
+    if (( SLEEP_SINCE == 0 )); then
+      SLEEP_SINCE="$(date +%s)"
+      net_say "$DESC: kein Netz ($GRUND). Schlafmodus: Pruefung alle $(( NET_WAIT_INTERVAL / 60 )) min, Aufgabe um $(date -d "@$(( SLEEP_SINCE + NET_WAIT_MAX ))" +%H:%M)."
+    fi
+
+    # Waehrend des Schlafs "netwait" statt der eigentlichen Phase: der
+    # Collector zaehlt diesen Prozess dann nicht als belegt, sonst verzerrte
+    # ein stundenlanger Schlaf die Empfehlung fuer den naechsten Lauf.
+    STATUS_FILE="${STATUS_DIR:-}/${WORKER_TARGET:-main}"
+    STATUS_SAVED=""
+    if [ -n "${STATUS_DIR:-}" ] && [ -f "$STATUS_FILE" ]; then
+      STATUS_SAVED="$(cat -- "$STATUS_FILE")"
+      status_set netwait "$(sed -n 's/^target=//p' <<< "$STATUS_SAVED")" \
+                         "$(sed -n 's/^domain=//p' <<< "$STATUS_SAVED")"
+    fi
+
+    NETZ=false
+    while :; do
+      REST=$(( SLEEP_SINCE + NET_WAIT_MAX - $(date +%s) ))
+      if (( REST <= 0 )); then
+        break
+      fi
+      SCHLAF=$(( REST < NET_WAIT_INTERVAL ? REST : NET_WAIT_INTERVAL ))
+      sleep "$SCHLAF"
+      NET_RETRY_WAITED=$(( NET_RETRY_WAITED + SCHLAF ))
+      if net_ok; then
+        NETZ=true
+        break
+      fi
+      net_say "$DESC: Schlafmodus, noch kein Netz."
+    done
+
+    if [ -n "$STATUS_SAVED" ]; then
+      printf '%s\n' "$STATUS_SAVED" > "$STATUS_FILE.tmp"
+      mv -f -- "$STATUS_FILE.tmp" "$STATUS_FILE"
+    fi
+
+    if [ "$NETZ" != true ]; then
+      net_say "$DESC: nach $(( NET_WAIT_MAX / 60 )) min Schlafmodus noch immer kein Netz - Aufgabe."
+      break
+    fi
+    net_say "$DESC: Netz wieder da nach $(( ( $(date +%s) - SLEEP_SINCE ) / 60 )) min Schlafmodus - neuer Versuch."
+    attempt=0
+  done
+
+  if [ -n "$CAP" ]; then
+    rm -f -- "$CAP"
+  fi
+  return "$rc"
+}
+
+
 # Holt vorab alle Quellen, die der Bau braucht, mit Wiederholung.
 #
 # Warum vorweg: ohne das werden Quellen erst waehrend des Bauens geholt. Ein
@@ -1482,8 +1681,9 @@ state_has ()
 #
 # Sollte das einmal nicht mehr stimmen, faellt trotzdem nichts aus: was hier
 # fehlt, wird beim Bauen nachgeholt wie bisher. Der Schritt beschleunigt und
-# entschaerft, er ist keine Voraussetzung - deshalb bricht er auch nur nach
-# DOWNLOAD_ATTEMPTS vergeblichen Versuchen ab und nicht beim ersten.
+# entschaerft, er ist keine Voraussetzung. Wiederholung und Schlafmodus bei
+# Netzausfall: net_retry. Das Nachholen im Bauschritt laeuft ebenfalls dort
+# hindurch.
 download_sources ()
 {
   local ARGS="$1"
@@ -1495,30 +1695,16 @@ download_sources ()
 
   local -i target_index
   local TARGET MAKE_CMD
-  local -i attempt
 
   for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
 
     TARGET="${TARGETS[target_index]}"
     printf -v MAKE_CMD "make download GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
 
-    for (( attempt=1; attempt <= DOWNLOAD_ATTEMPTS; attempt += 1 )); do
-
-      echo "Downloading the sources for target $TARGET (attempt $attempt of $DOWNLOAD_ATTEMPTS) ..."
-      echo "$MAKE_CMD"
-
-      if eval "$MAKE_CMD"; then
-        break
-      fi
-
-      if (( attempt >= DOWNLOAD_ATTEMPTS )); then
-        abort "Could not download the sources for target $TARGET after $DOWNLOAD_ATTEMPTS attempts."
-      fi
-
-      echo "Download failed, retrying in $DOWNLOAD_RETRY_DELAY seconds ..."
-      sleep "$DOWNLOAD_RETRY_DELAY"
-
-    done
+    echo "Downloading the sources for target $TARGET ..."
+    echo "$MAKE_CMD"
+    net_retry "make download ($TARGET)" "$MAKE_CMD" \
+      || abort "Could not download the sources for target $TARGET."
 
   done
 }
@@ -1609,7 +1795,8 @@ prepare_gluon_tree ()
   echo "Gluon make update..."
   printf -v MAKE_CMD "make update %s"  "$ARGS"
   echo "$MAKE_CMD"
-  eval "$MAKE_CMD"
+  net_retry "make update" "$MAKE_CMD" \
+    || abort "\"make update\" failed."
 
   # Gluon's "make clean" is per target, so it has to be run for each of them.
   if [ "$MAKECLEAN" = true ]; then
@@ -2037,15 +2224,20 @@ run_build_step ()
   read_uptime_as_integer
   local STEP_UPTIME_BEGIN="$UPTIME"
 
-  {
-    build_site_target "${ALL_SITE_RELBRANCHES[$site_index]}" \
-                      "${ALL_SITE_TEMPLATE_NAMES[$site_index]}" \
-                      "$SITE_CODE" \
-                      "$TARGET"
-  } 2>&1 | timestamp_lines | tee --append -- "$LOG_FILENAME"
+  # Ueber net_retry: holt make waehrend des Bauens eine Quelle nach und das
+  # Netz ist weg, wartet der Schritt, statt den Lauf zu beenden. Ein echter
+  # Fehler kommt unveraendert als Exitcode zurueck, und errexit greift wie
+  # vorher. Die Wartezeit zaehlt nicht zur Bauzeit, siehe NET_RETRY_WAITED.
+  local STEP_CMD
+  printf -v STEP_CMD '{ build_site_target %q %q %q %q; } 2>&1 | timestamp_lines | tee --append -- %q' \
+         "${ALL_SITE_RELBRANCHES[$site_index]}" "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET" "$LOG_FILENAME"
+  net_retry "Bauschritt $SITE_CODE/$TARGET" "$STEP_CMD" "$LOG_FILENAME"
 
   read_uptime_as_integer
-  local -i ELAPSED="$(( UPTIME - STEP_UPTIME_BEGIN ))"
+  local -i ELAPSED="$(( UPTIME - STEP_UPTIME_BEGIN - NET_RETRY_WAITED ))"
+  if (( NET_RETRY_WAITED > 0 )); then
+    echo "Site code $SITE_CODE, target $TARGET: $(( NET_RETRY_WAITED / 60 )) min auf das Netz gewartet, nicht in der Bauzeit."
+  fi
 
 
   local ELAPSED_TIME_STR
