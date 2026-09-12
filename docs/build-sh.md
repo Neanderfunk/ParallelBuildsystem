@@ -101,6 +101,11 @@ Später Geladenes gewinnt.
 | `SPACE_WORKER_DOMAIN_MB` | `200` | je Worker und weitere Domain |
 | `SPACE_RESERVE_MB` | `20480` | wird nicht verplant |
 | `DISK_FULL_MB` | `1024` | darunter nennt ein Abbruch die volle Platte als Ursache |
+| `DOWNLOAD_ATTEMPTS` | `5` | Versuche bei Netzfehler (jeder Netzschritt), `0` = kein Vorab-Download |
+| `DOWNLOAD_RETRY_DELAY` | `30` | Sekunden zwischen diesen Versuchen |
+| `NET_WAIT_INTERVAL` | `600` | Schlafmodus: alle so viele Sekunden prüfen, ob das Netz wieder da ist |
+| `NET_WAIT_MAX` | `7200` | Schlafmodus: danach Aufgabe; `0` = kein Schlafmodus |
+| `NET_CHECK_HOST` | `github.com` | Netzprüfung: Namensauflösung + TCP 443 |
 | `DATE_SUFFIX_FORMAT` | `+%s` | Name des Ausgabeverzeichnisses |
 | `SITE_COPY_EXCLUDES` | `*.old *.backup *~ *.nonworking` | nicht ins Site-Verzeichnis kopieren |
 
@@ -258,6 +263,60 @@ Später Geladenes gewinnt.
   beendet Collector und Worker (TERM, nach 10 s KILL, ganze Prozessgruppen).
 - Bei `df` unter `DISK_FULL_MB` nennt der Abbruch die volle Platte ausdrücklich.
 
+### 5.1 Netzausfall: Wiederholung und Schlafmodus
+
+Anlass: In der Nacht zum 12.09.2026 fiel am Standort von wir-horst das Netz
+aus. Der Lauf endete um 00:04 im golden tree, weil `make` beim Bauen von
+ath79-mikrotik eine Quelle nachholen wollte. Seitdem laufen alle Schritte, die
+am Netz hängen, über `net_retry`: `git clone` (Gluon), `make update`,
+`make download` und jeder Bauschritt, im Hauptprozess wie in den Workern.
+
+Nach einem Fehler:
+
+1. **Kein Netzproblem**, also kein Netzfehler in der Ausgabe dieses Versuchs
+   und `NET_CHECK_HOST` erreichbar: Abbruch sofort, wie vorher. Ein
+   Compilerfehler oder ein Patch-Konflikt wird durch Warten nicht besser.
+2. **Netzfehler** (curl, wget, git, `download.pl`, Resolver) oder Netz weg:
+   bis zu `DOWNLOAD_ATTEMPTS` Versuche im Abstand von `DOWNLOAD_RETRY_DELAY`,
+   für den kurzen Aussetzer.
+3. **Netz wirklich weg** nach diesen Versuchen: **Schlafmodus**. Alle
+   `NET_WAIT_INTERVAL` (10 min) wacht er auf und prüft das Netz. Ist es wieder
+   da, folgt derselbe Schritt noch einmal, mit frischen Versuchen. `make` baut
+   dabei nur, was fehlt, der Schritt macht also dort weiter, wo er stand.
+   Nach `NET_WAIT_MAX` (2 h) ab dem ersten Einschlafen gibt er auf, dann greift
+   der Abbruch wie in 5 (`--resume`). Gedacht ist das für Bauarbeiten am
+   Verteiler, einen abgeschalteten Switch oder eine Routingstörung, die meist
+   nach einer Stunde vorbei sind.
+4. **Netz da, der Netzfehler bleibt trotzdem** (Quelle weg, Hash passt nicht):
+   Aufgabe nach den Versuchen aus 2, ohne Schlafmodus.
+
+Die Netzprüfung löst `NET_CHECK_HOST` auf und baut eine TCP-Verbindung auf
+Port 443 auf. Die Namensauflösung allein genügt nicht, weil der DNS-Cache des
+Routers bei einem Leitungsausfall oft noch antwortet.
+
+Im Log sieht das so aus, mit Uhrzeit, beim Bauschritt auch im Log des
+Schritts:
+
+```
+[03:12:40] Bauschritt 01_vel/ath79-mikrotik: Netzfehler (Could not resolve host), Versuch 1 von 5 - naechster in 30 s.
+...
+[03:14:52] Bauschritt 01_vel/ath79-mikrotik: kein Netz (Could not resolve host). Schlafmodus: Pruefung alle 10 min, Aufgabe um 05:14.
+[03:24:52] Bauschritt 01_vel/ath79-mikrotik: Schlafmodus, noch kein Netz.
+[03:34:53] Bauschritt 01_vel/ath79-mikrotik: Netz wieder da nach 20 min Schlafmodus - neuer Versuch.
+```
+
+- Während des Schlafs steht der Prozess in der Phase `netwait` (7.5). Der
+  Collector zählt ihn dann nicht als belegt, sonst verzerrte ein langer Schlaf
+  die Empfehlung.
+- Die Wartezeit zählt nicht zur Bauzeit in `build-times.csv`, damit die
+  LPT-Reihenfolge (7.2) des nächsten Laufs stimmt. Der Schritt meldet sie
+  gesondert.
+- Im Parallelbetrieb schläft jeder Worker für sich. Fällt das Netz aus,
+  während sechs Worker Quellen nachholen, schlafen alle sechs und wachen
+  unabhängig voneinander auf.
+- `NET_WAIT_MAX=0` schaltet den Schlafmodus ab, die Wiederholungen aus 2
+  bleiben.
+
 ---
 
 ## 6. Ausgabe und Logs
@@ -389,7 +448,8 @@ build.sh (Hauptprozess, eigene UID)
 
 - `images/running/.status/<main|target>`: `phase`, `target`, `domain`, `seit`, `pid`
 - atomar geschrieben (tmp + mv)
-- Phasen: `prepare`, `golden`, `build`, `finalize`
+- Phasen: `prepare`, `golden`, `build`, `finalize`, dazu `netwait` im
+  Schlafmodus (siehe 5.1). Die zählt der Collector nicht als belegt.
 - Nutzen: Collector ordnet jede Lastprobe einer Phase zu; zum Mitlesen:
   `grep -H phase images/running/.status/*`
 
