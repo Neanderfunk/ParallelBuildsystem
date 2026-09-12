@@ -1,0 +1,19 @@
+# Empfehlung aus Lauf 1789132082-2459696, 2026-09-11 17:38
+# Gelesen von build.sh bei WORKERS=auto; sonst nur zur Kenntnis.
+empfohlen=7
+beobachtet_workers=6
+targets=8
+wirksame_workers=6
+kerne=36
+proben=8479
+proben_alle_belegt=1066
+worker_erlang=4.05
+worker_erlang_proben=2255
+steal_kerne_mittel=0.05
+steal_kerne_max=0.97
+cpu_auslastung=0.45
+iowait_kerne=0.42
+platte_util_mittel=11.8
+platte_util_p95=77.1
+steal_kerne_alle_belegt=0.03
+begruendung=CPU mit allen Workern belegt nur 45 % ausgelastet, iowait 0.42 Kerne, Platte 12 % - es ist Luft, ein Worker mehr

@@ -1,0 +1,10 @@
+
+==============================================================================
+ Lauf     26091123bro -> images/images-1789161355  (parallel, 6 Worker)
+ Dauer    3 h 49 min  (prepare 18 min, je Domain im Mittel 23 min)
+ Umfang   9 Domains x 9 Targets = 81 Bauschritte
+ Worker   4.5 Erl von 6  (Parallelphase 126 min, 72 Bauschritte)
+ Images   2727 (sysupgrade 1827, factory 855, other 45)
+ Groesse  26.0 GB: Images 23.7 GB, Pakete 332 MB, opkg 2.0 GB, Logs 27 MB
+ Platte   879 GB frei unter /home/build/firmware2023.2.x-adorfer
+==============================================================================
