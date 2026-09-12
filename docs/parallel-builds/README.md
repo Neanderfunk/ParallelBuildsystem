@@ -48,13 +48,17 @@ What we found:
    one domain for all targets would need ~62 GB.
 5. **With W workers, the speed-up is not W.** With 6 workers, follow-up
    domains became 2.7–2.8× faster, not 6×. Each step takes ~1.7× longer
-   under load. CPU contention is ruled out by pressure-stall data. I/O
-   pressure is the remaining candidate, but it is not proven.
+   under load, and ~1.85× with 9 workers: a step alone takes 0.54 of its
+   full-load time (run 7). Run-queue contention is ruled out by
+   pressure-stall data. Clock speed under thermal limits and I/O remain;
+   neither is proven.
 6. **The worker count is set by waves, not by load.** With one worker per
    target, T targets on W workers run in ⌈T/W⌉ waves. The last wave runs with
    few workers, and the parallel phase can never be shorter than the longest
    single target. A "utilisation is low, add one worker" rule gave the wrong
-   answer.
+   answer. With 9 workers for 9 targets (one wave), a run of 48 domains
+   built 36 % more steps per hour than with 6; its end is a tail in which the
+   longest target runs alone.
 7. **Several standard measurements misled us** (section 7): a load threshold
    as phase detector, a synchronous disk benchmark, and averages that hide
    bursts.
@@ -267,11 +271,12 @@ by wall time. The two methods agree within 0.1–0.2 Erl (run 2: 4.9 against
 
 ## 5. Results
 
-All runs on wir-horst, Gluon v2023.2.6, `WORKERS=6`. "Golden" is the first
+All runs on wir-horst, Gluon v2023.2.6. Runs 1–6 used `WORKERS=6`, run 7
+used 9 workers (`WORKERS=auto`, one per target). "Golden" is the first
 domain for all targets. "Parallel" is the remaining domains, spread over the
 workers.
 
-| Run | Date | Domains × targets | Total | prepare | golden | parallel phase (steps) | Erl of 6 | per follow-up domain |
+| Run | Date | Domains × targets | Total | prepare | golden | parallel phase (steps) | Erl (of W) | per follow-up domain⁴ |
 |---|---|---|---|---|---|---|---|---|
 | 1 | 10 Sep | 5 × 6 | 124 min | 14 | 66 | 41 min (24) | 4.6 | 10.3 min |
 | 2 | 11 Sep | 9 × 6 | 163 min | 13 | ~71¹ | 79 min (48) | 4.9 | 9.9 min |
@@ -279,10 +284,16 @@ workers.
 | 4² | 11 Sep | 5 × 8 | 167 min | 18 | 91 | 58 min (32) | 4.0 | 14.5 min |
 | 5 | 12 Sep | 9 × 9 | 229 min³ | 19 | 82³ | 126 min (72) | 4.5 | 18.0 min |
 | 6 | 12 Sep | 9 × 9 | 247 min | 19 | 100 | 125 min (72) | 4.5 | 17.8 min |
+| 7 | 12 Sep | 48 × 9 | 562 min | 0⁵ | 0⁵ | 550 min (432) | 7.2 of 9 | 14.9 min |
 
 ¹ golden plus finalize. ² First run with split `-j`, LPT order and PSI.
 ³ Resumed after a network outage had killed the first attempt. Two of the
 nine golden steps were already done, and the total counts from the resume.
+⁴ Per mesh domain (site code). The `-key` variant of a domain shares its
+site code, so runs 5–6 have 8 follow-up variants but 7 follow-up domains.
+Per variant: 15.8 min (run 5), 15.6 min (run 6), 11.5 min (run 7).
+⁵ Golden tree reused: the fingerprint matched, so prepare and golden were
+skipped and all 48 domains ran in the parallel phase.
 
 **Serial comparison.** A serial run with the same 6 targets on the same day
 took 27–29 min per follow-up domain. So follow-up domains ran **2.7× (run 1)
@@ -316,6 +327,15 @@ collector averages the number of workers that report the build phase in
 their status files, over the samples with at least one such worker. The CSV
 method divides the sum of step times by the wall time from the first step
 start to the last step end. We have not traced the difference further.
+
+**Nine workers, one wave (run 7).** With one worker per target, 9 workers
+put all 9 targets into a single wave. Compared with runs 5–6 (6 workers,
+two waves), the parallel phase built 47 instead of 35 steps per hour
+(+36 %), and a variant took 11.5 instead of 15.7 min. The mean step got
+slower, 549 s against 465–472 s: more concurrent workers make each step
+longer (section 6.2). The collector saw all 9 workers busy for 274 of the
+550 minutes and the CPU 54 % utilised in that time; its rule recommends a
+tenth worker, which only helps with more than 9 targets.
 
 **Output of run 5:** 2,727 images and 26.0 GB, about 320 MB per step. The
 image share of that (23.7 GB) is ~290 MB per step. The planning figure of
@@ -358,6 +378,25 @@ turbos to about 3.6 GHz with few busy cores and to roughly 2.7 GHz with all
 cores busy. A mostly single-threaded step gets slower when its neighbours
 light up more cores. None of this has been isolated experimentally.
 
+**Run 7 shows the dependence directly.** Its long tail (section 6.3) ran
+the same kind of step with 9, then fewer, then a single worker. Relative
+to the median step time of the same target at full load:
+
+| Workers busy | 8–9 | 7 | 6 | 5 | 4 | 3 | 2 | 1 |
+|---|---|---|---|---|---|---|---|---|
+| Step time | 1.00 | 0.92 | 0.91 | 0.82 | 0.70 | 0.73 | 0.59 | 0.54 |
+| Steps | 374 | 20 | 5 | 10 | 5 | 4 | 6 | 8 |
+
+`ath79-generic` took ~12.3 min per step with 9 workers and 6.7 min alone.
+The room temperature at the rack stayed at 32.3 °C throughout, so this is
+not an effect of the evening. In run 6 the one step with a single worker
+busy was also at 0.55. The step time is set by what runs next to it, not
+by the step itself. That fits clock speed and I/O equally well; which of the
+two dominates is still open. One of the host's two CPU temperature zones
+peaks at 88–89 °C under build load, the critical level in its monitoring
+and 8–10 K above the other zone, which makes clock speed the stronger
+candidate.
+
 ### 6.3 Waves, and the critical path
 
 With one worker per target, the parallel phase is a scheduling problem of T
@@ -392,17 +431,25 @@ at most 3 workers.
   (x86-generic, mt7622, mpc85xx-p1020) into the second wave, exactly as
   intended. Still, 3 or fewer workers were busy for 45 of 125 minutes.
   `ath79-generic` again set the lower bound, at 85.7 min.
-- **The next lever would be the device axis.** Two workers could each build
-  half of the devices of `ath79-generic`, in two separate overlays of the
-  same target. This is untested.
+- **Run 7 (9 targets, 9 workers, 48 domains) has one wave, and a tail.**
+  The eight shorter targets finished between minute 423 and 492;
+  `ath79-generic` ran alone for the last 58 minutes (1 worker busy: 57.5
+  min). Its steps got shorter as the others finished (table in 6.2), which
+  made the end of the run faster than any estimate from the average step.
+- **The next lever would be a second worker for the longest target.** Two
+  workers could each build half of the devices of `ath79-generic`, in two
+  separate overlays of the same target. With many domains, splitting the
+  domains of that target between two workers is simpler and gives the same
+  effect. Both are untested.
 
 ### 6.4 The golden tree is now the largest item
 
 For few domains, the serial golden tree dominates: 44–58 % of runs 2–4. It
 disappears completely when the fingerprint matches, e.g. when a run only
 builds a different selection of domains. Runs 1–6 all rebuilt it: prepare
-and golden appear in every run. Reuse has not been measured on wir-horst
-yet. Parallelising the golden tree itself is
+and golden appear in every run. **Run 7 reused it:** same inputs as run 6,
+so prepare took 0 min and no golden step ran; the 562 min are 550 min
+parallel phase and 11 min finalize. Parallelising the golden tree itself is
 harder, because all targets build into the same tree.
 
 ---

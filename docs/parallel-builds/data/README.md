@@ -11,6 +11,7 @@ columns are German, because `build.sh` is.
 | `run4-26091118bro` | 4 | 5 × 8, 6 workers, first run with split `-j`, LPT order, PSI |
 | `run5-26091123bro` | 5 | 9 × 9, 6 workers. Resumed: `1789161357-…` is the attempt killed by a network outage (collector samples only), `1789167052-…` the resume |
 | `run6-26091206bro` | 6 | 9 × 9, 6 workers, same configuration as run 5 (repetition) |
+| `run7-26091213bro` | 7 | 48 × 9, 9 workers (one wave), golden tree reused: no prepare, no golden steps |
 
 ## `*.build-times.csv`
 

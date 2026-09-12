@@ -42,9 +42,11 @@ def analyse(d):
         if r['site_code'] not in domains:
             domains.append(r['site_code'])
     first = domains[0]
-    # golden = steps of the first domain that ran before any other domain's step
+    # golden = steps of the first domain that ran before any other domain's step.
+    # A run that reuses the golden tree has no prepare event and builds no
+    # golden steps: then every step belongs to the parallel phase.
     other_beg = min((r['beg'] for r in builds if r['site_code'] != first), default=None)
-    golden = [r for r in builds if r['site_code'] == first and (other_beg is None or r['end'] <= other_beg + 5)]
+    golden = [r for r in builds if prep and r['site_code'] == first and (other_beg is None or r['end'] <= other_beg + 5)]
     par = [r for r in builds if r not in golden]
     g_end = max(r['end'] for r in golden) if golden else t_prep_end
     p_beg = min(r['beg'] for r in par) if par else None
@@ -74,7 +76,30 @@ def analyse(d):
             k = sum(1 for r in par if r['beg'] <= s < r['end'])
             prof[k] = prof.get(k, 0) + 10
         out['concurrency_min'] = {k: v / 60 for k, v in sorted(prof.items())}
-        out['per_domain_min'] = wall / 60 / (len(domains) - 1) if len(domains) > 1 else 0
+        # "domain" = mesh domain (site_code); the -key variant of a domain
+        # shares its site code. Reported per domain and per variant.
+        par_domains = len({r['site_code'] for r in par})
+        par_variants = len({(r['template'], r['site_code']) for r in par})
+        out['per_domain_min'] = wall / 60 / par_domains if par_domains else 0
+        out['per_variant_min'] = wall / 60 / par_variants if par_variants else 0
+        out['par_domains'], out['par_variants'] = par_domains, par_variants
+        # step time against concurrency: each step's duration relative to the
+        # median of its target's steps that ran with the most workers busy
+        wmax = max(prof)
+        def busy(t):
+            return sum(1 for r in par if r['beg'] <= t < r['end'])
+        for r in par:
+            r['conc'] = busy((r['beg'] + r['end']) // 2)
+        ref = {}
+        for r in par:
+            if r['conc'] >= wmax - 1:
+                ref.setdefault(r['target'], []).append(r['sec'])
+        ref = {t: st.median(v) for t, v in ref.items()}
+        rel = {}
+        for r in par:
+            if r['target'] in ref:
+                rel.setdefault(r['conc'], []).append(r['sec'] / ref[r['target']])
+        out['rel_step_by_conc'] = {k: (len(v), st.median(v)) for k, v in sorted(rel.items())}
     out['finalize_min'] = sum(int(r['seconds']) for r in fin) / 60
     m = load_metrics(d, rid)
     if m:
@@ -102,8 +127,11 @@ def show(o):
           f"({o['golden_steps']} steps, mean {o['golden_step_mean_s']:.0f} s), finalize {o['finalize_min']:.1f}")
     if 'par_wall_min' in o:
         print(f"   parallel phase {o['par_wall_min']:.0f} min, {o['par_steps']} steps, mean step {o['par_step_mean_s']:.0f} s, "
-              f"{o['erlang']:.2f} Erl, {o['per_domain_min']:.1f} min per follow-up domain")
+              f"{o['erlang']:.2f} Erl, {o["per_domain_min"]:.1f} min per domain ({o['par_domains']}), "
+              f"{o['per_variant_min']:.1f} min per variant ({o['par_variants']})")
         print('   concurrency (workers busy: minutes): ' + ', '.join(f"{k}: {v:.1f}" for k, v in o['concurrency_min'].items()))
+        print('   step time relative to full load (workers busy: steps, median): '
+              + ', '.join(f"{k}: {n}/{m:.2f}" for k, (n, m) in o['rel_step_by_conc'].items()))
         for t, (b, e, n, mean) in o['targets'].items():
             print(f"     {t:18s} {b:5.1f} -> {e:5.1f} min  {n} steps, mean {mean:.0f} s")
     for ph in ('prepare', 'golden', 'build'):
