@@ -230,7 +230,10 @@ Später Geladenes gewinnt.
 ## 5. Zustand, Abbruch, Resume
 
 - Zustandsdatei `images/running/.build-state`:
-  - Kopf: `sbranch`, `date_suffix`, `site_version`, `fingerprint`, `started`
+  - Kopf: `sbranch`, `date_suffix`, `site_version`, `domains`, `targets`,
+    `steps` (Anzahl), `fingerprint`, `started`, dann `workers` (wirksame
+    Worker nach der Platzprüfung, bei `--resume` erneut nach `resumed`).
+    Dieselbe Angabe steht als Zeile „Umfang: …“ am Anfang des Logs
   - danach je erledigtem Schritt eine Zeile `build <template> <code> <target>`
     bzw. `finalize <template> <code> -` (O_APPEND, mehrere Worker gleichzeitig ok)
 - Fingerabdruck des Laufs über: BUILD_ORDER, Targets, Domains, alle

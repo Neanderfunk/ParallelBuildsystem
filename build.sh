@@ -1397,6 +1397,9 @@ state_init ()
     echo "sbranch=$SBRANCH"
     echo "date_suffix=$DATE_SUFFIX"
     echo "site_version=$GLUON_SITE_VERSION"
+    echo "domains=${#ALL_SITE_TEMPLATE_NAMES[@]}"
+    echo "targets=${#BUILD_TARGETS[@]}"
+    echo "steps=$(( ${#ALL_SITE_TEMPLATE_NAMES[@]} * ${#BUILD_TARGETS[@]} ))"
     echo "fingerprint=$FINGERPRINT"
     echo "started=$(date --iso-8601=seconds)"
   } > "$STATE_FILE"
@@ -2456,6 +2459,20 @@ space_check ()
   fi
 }
 
+# Umfang des Laufs an den Anfang des Logs und in die Zustandsdatei, die
+# imageslive unter running/ zeigt. Erst nach space_check, denn der kann die
+# Worker-Zahl noch senken. Wirksam sind hoechstens so viele Worker wie
+# Targets. Bei --resume kommt eine weitere workers-Zeile nach "resumed=" dazu.
+announce_run_scope ()
+{
+  local -i D=${#ALL_SITE_TEMPLATE_NAMES[@]} T=${#BUILD_TARGETS[@]}
+  local -i W=$(( WORKERS < T ? WORKERS : T ))
+  local ART="seriell"
+  (( W > 1 )) && ART="parallel"
+  echo "Umfang: $D Domains x $T Targets = $(( D * T )) Bauschritte, $W Worker ($ART)."
+  echo "workers=$W" >> "$STATE_FILE"
+}
+
 # Uebernimmt im Worker den Zustand des Hauptlaufs. Ohne Pruefung und ohne
 # Meldung: beides hat der Hauptprozess schon getan (state_init oder
 # state_resume), und der Fingerabdruck muss hier nicht erneut verglichen
@@ -3383,6 +3400,7 @@ prepare_run_state
 # --restart hat den alten Lauf schon weggeraeumt, und ein --resume weiss aus
 # der Zustandsdatei, was fertig ist.
 space_check
+announce_run_scope
 
 generate_all_site_configs
 
