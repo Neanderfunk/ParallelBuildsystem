@@ -10,7 +10,7 @@ columns are German, because `build.sh` is.
 | `run3-26091115bro` | 3 | 4 domains × 8 targets, 6 workers |
 | `run4-26091118bro` | 4 | 5 × 8, 6 workers, first run with split `-j`, LPT order, PSI |
 | `run5-26091123bro` | 5 | 9 × 9, 6 workers. Resumed: `1789161357-…` is the attempt killed by a network outage (collector samples only), `1789167052-…` the resume |
-<!-- RUN6-DATA -->
+| `run6-26091206bro` | 6 | 9 × 9, 6 workers, same configuration as run 5 (repetition) |
 
 ## `*.build-times.csv`
 

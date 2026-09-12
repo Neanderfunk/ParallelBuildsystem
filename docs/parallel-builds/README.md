@@ -247,8 +247,8 @@ are busy**, because ramp-up and tail say nothing about spare capacity.
 
 `build.sh` computes the mean number of busy workers (in Erlang) a second
 time, independently, from its step-time CSV: the sum of step times divided
-by wall time. The two methods agree within 0.1 Erl (4.9 against 5.0 in
-run 2).
+by wall time. The two methods agree within 0.1–0.2 Erl (run 2: 4.9 against
+5.0; see section 5 for runs 5 and 6).
 
 ---
 
@@ -265,7 +265,7 @@ workers.
 | 3 | 11 Sep | 4 × 8 | 151 min | 17 | 89 | 44 min (24) | 4.1 | 14.8 min |
 | 4² | 11 Sep | 5 × 8 | 167 min | 18 | 91 | 58 min (32) | 4.0 | 14.5 min |
 | 5 | 12 Sep | 9 × 9 | 229 min³ | 19 | 82³ | 126 min (72) | 4.5 | 18.0 min |
-<!-- RUN6-ROW -->
+| 6 | 12 Sep | 9 × 9 | 247 min | 19 | 100 | 125 min (72) | 4.5 | 17.8 min |
 
 ¹ golden plus finalize. ² First run with split `-j`, LPT order and PSI.
 ³ Resumed after a network outage had killed the first attempt. Two of the
@@ -279,6 +279,29 @@ tree is now the largest single item: 44 % of run 2 and 58 % of run 3.
 **Linear scaling.** Run 2 had twice as many follow-up steps as run 1
 (48 against 24) and took 79 instead of 41 min. Ramp-up and tail matter
 less the more domains there are.
+
+**Repeatability.** Runs 5 and 6 used the same domains, targets and worker
+count, a few hours apart. The only difference was the firmware content:
+new config-mode packages and patches, which change no build step.
+
+| | Run 5 | Run 6 |
+|---|---|---|
+| Parallel phase | 126 min | 125 min |
+| Erlang (build-times / collector) | 4.50 / 4.67 | 4.47 / 4.56 |
+| Per follow-up domain | 18.0 min | 17.8 min |
+| Mean step | 472 s | 465 s |
+| Busy workers: 6 / 5 / 4 / 3 / 2 / 1 (min) | 48.5 / 20.5 / 17.0 / 29.2 / 6.8 / 4.2 | 49.2 / 21.0 / 10.3 / 33.0 / 6.3 / 5.2 |
+
+At run level the numbers repeat within about 1 %. Per target, the mean
+step time varies by up to ±10 %: ath79-generic 648 against 595 s,
+ath79-mikrotik 471 against 526 s. Single-target comparisons between runs
+therefore need more than one run.
+
+The two Erlang methods differ by 0.09–0.17 Erl in runs 5 and 6. The
+collector averages the number of workers that report the build phase in
+their status files, over the samples with at least one such worker. The CSV
+method divides the sum of step times by the wall time from the first step
+start to the last step end. We have not traced the difference further.
 
 **Output of run 5:** 2,727 images and 26.0 GB, about 320 MB per step. The
 image share of that (23.7 GB) is ~290 MB per step. The planning figure of
@@ -304,7 +327,7 @@ with F = W (~27 h) was far too optimistic.
 ### 6.2 What the 1.7× is not
 
 - **Not the hypervisor.** Steal time was 0.01–0.05 cores on average (max 1)
-  in runs 3–5.
+  in runs 3–6.
 - **Not CPU contention.** In run 3 every worker still used `-j 72`. A spot
   check with `vmstat` showed 13–95 runnable processes on 36 vCPUs. Run 4
   split `-j`: the CPU pressure stall with all workers busy dropped to
@@ -314,8 +337,8 @@ with F = W (~27 h) was far too optimistic.
   is ~0.5 cores.
 
 **What remains.** I/O pressure is 8–9 % with all workers busy (PSI io
-`some`, runs 4 and 5), with bursts of up to 38 blocked processes and disk
-%util p95 81–84 %. The candidates are overlayfs copy-up, writeback of image
+`some`, runs 4–6), with bursts of up to 38 blocked processes and disk
+%util p95 81–89 %. The candidates are overlayfs copy-up, writeback of image
 bursts that coincide across workers, and **clock speed**. The E5-2698 v4
 turbos to about 3.6 GHz with few busy cores and to roughly 2.7 GHz with all
 cores busy. A mostly single-threaded step gets slower when its neighbours
@@ -351,11 +374,13 @@ at most 3 workers.
   shorter than that chain, i.e. ~86–95 min instead of 126. That assumes the
   per-step slowdown does not grow with 9 concurrent workers, which is
   exactly what section 6.2 cannot promise.
+- **Run 6 repeated the pattern.** LPT put the three shortest targets
+  (x86-generic, mt7622, mpc85xx-p1020) into the second wave, exactly as
+  intended. Still, 3 or fewer workers were busy for 45 of 125 minutes.
+  `ath79-generic` again set the lower bound, at 85.7 min.
 - **The next lever would be the device axis.** Two workers could each build
   half of the devices of `ath79-generic`, in two separate overlays of the
   same target. This is untested.
-
-<!-- RUN6-WAVES -->
 
 ### 6.4 The golden tree is now the largest item
 
@@ -457,10 +482,10 @@ must not end up under one signed manifest.
 
 ## 9. Limitations
 
-- **One host, few runs, no repetitions** under controlled conditions. The
-  hypervisor runs other guests, which the build guest cannot see beyond
-  steal time.
-- Runs 1–5 all used **6 workers**. The wave argument predicts that 8 or 9
+- **One host and few runs.** Only one configuration was repeated
+  (runs 5 and 6), and not under controlled conditions. The hypervisor runs
+  other guests, which the build guest cannot see beyond steal time.
+- Runs 1–6 all used **6 workers**. The wave argument predicts that 8 or 9
   workers (one wave) are faster for 8–9 targets. That has not been measured
   yet.
 - The **full production run** (22 targets, 86 variants) has not been done
