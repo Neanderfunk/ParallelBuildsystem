@@ -1,6 +1,6 @@
 # build.sh – Arbeitsweise, Optionen, Parallelbetrieb
 
-Stand 10.09.2026, Branch `v2023.2.x-parallel`. Messwerte vom Buildhost
+Stand 12.09.2026, Branch `v2023.2.x` (bis 12.09. als `v2023.2.x-parallel` entwickelt). Messwerte vom Buildhost
 wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 
 ---
