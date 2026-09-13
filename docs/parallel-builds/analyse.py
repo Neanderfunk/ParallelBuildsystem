@@ -37,16 +37,20 @@ def analyse(d):
     fin = [r for r in rows if r['phase'] == 'finalize']
     for r in builds:
         r['end'] = int(r['epoch']); r['sec'] = int(r['seconds']); r['beg'] = r['end'] - r['sec']
-    domains = []
+    # Variants (template, site_code): the -key variant of a domain shares its
+    # site code, so the golden tree has to be found per variant.
+    variants = []
     for r in builds:
-        if r['site_code'] not in domains:
-            domains.append(r['site_code'])
-    first = domains[0]
-    # golden = steps of the first domain that ran before any other domain's step.
-    # A run that reuses the golden tree has no prepare event and builds no
-    # golden steps: then every step belongs to the parallel phase.
-    other_beg = min((r['beg'] for r in builds if r['site_code'] != first), default=None)
-    golden = [r for r in builds if prep and r['site_code'] == first and (other_beg is None or r['end'] <= other_beg + 5)]
+        v = (r['template'], r['site_code'])
+        if v not in variants:
+            variants.append(v)
+    first = variants[0]
+    # golden = steps of the first variant that ran before any other variant's
+    # step. A run that reuses the golden tree has no prepare event and builds
+    # no golden steps: then every step belongs to the parallel phase.
+    other_beg = min((r['beg'] for r in builds if (r['template'], r['site_code']) != first), default=None)
+    golden = [r for r in builds if prep and (r['template'], r['site_code']) == first
+              and (other_beg is None or r['end'] <= other_beg + 5)]
     par = [r for r in builds if r not in golden]
     g_end = max(r['end'] for r in golden) if golden else t_prep_end
     p_beg = min(r['beg'] for r in par) if par else None
