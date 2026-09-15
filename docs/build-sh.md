@@ -554,15 +554,15 @@ build.sh (Hauptprozess, eigene UID)
 
 ### 7.10 Build-Monitor
 
-`scripts/buildmonitor.py` zeigt einen laufenden Lauf live im Terminal, im
+`scripts/build-top` zeigt einen laufenden Lauf live im Terminal, im
 Stil von btop: Kästen, scrollende Graphen, passt sich der Terminalgröße an.
 Nur Python-Standardbibliothek (ab 3.12, also Ubuntu 24.04), keine
 Zusatzpakete.
 
 ```
-scripts/buildmonitor.py                      # auf dem Buildhost, im Buildverzeichnis
-scripts/buildmonitor.py --url https://imageslive.ffdus.de/images2023.2ad
-scripts/buildmonitor.py --once --size 160x50 # ein Bild auf stdout
+scripts/build-top                      # auf dem Buildhost, im Buildverzeichnis
+scripts/build-top --url https://imageslive.ffdus.de/images2023.2ad
+scripts/build-top --once --size 160x50 # ein Bild auf stdout
 ```
 
 - Kopf: Release, Phase, ETA, Laufzeit, Umfang, Worker, Erlang,
