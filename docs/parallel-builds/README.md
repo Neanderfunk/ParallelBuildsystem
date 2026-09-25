@@ -619,6 +619,12 @@ must not end up under one signed manifest.
 - **The production run is a single data point** (section 5), not a
   measurement: it was interrupted twice, and nothing was varied. The
   collector's recommendation of 10 workers for 20 targets is untested.
+- **`WORKERS=auto` does not rescale for a different target count.** It
+  takes the last recommendation as it is. Run 8 recommended 6 workers and
+  run 9 ran with 6. Run 9 recommended 8, computed for its 8 targets (one
+  wave instead of two), and the release run took those 8 over for 20
+  targets, which gave it three waves. Only the release run's own
+  recommendation, 10, was computed for 20 targets.
 - **There is no serial run at production scale.** The 138 h are an
   extrapolation from the costs in section 2, for 22 targets.
 - The cause of the **1.7× per-step slowdown** is narrowed down, not
