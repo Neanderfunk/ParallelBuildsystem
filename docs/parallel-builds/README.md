@@ -634,15 +634,10 @@ must not end up under one signed manifest.
 - **x86-64** was not part of the local overlay measurements.
 
 **More is possible, no doubt.** This is what we worked with, and it paid
-off in this campaign. Before this work, a full build took about 3.5 h per
-variant, some 12 days for all 86 (the maintainer's figure from earlier
-releases). The 2023.2.6 release took about 40 h. Not all of that is
-parallel building: the serial model in section 2 already costs 94 min per
-variant, so part of the gain came from other changes to the build host that
-this report does not cover. Parallel building alone accounts for the step
-from an extrapolated 138 h to 40 h. The larger effect is harder to count:
-without it, the intermediate test runs would have used fewer domains and
-targets, and some bugs would likely have gone unnoticed.
+off in this campaign: the final build took about 40 h instead of an
+extrapolated 138 h serially. The larger effect is harder to count: without
+parallel builds, the intermediate test runs would have used fewer domains
+and targets, and some bugs would likely have gone unnoticed.
 
 ---
 
