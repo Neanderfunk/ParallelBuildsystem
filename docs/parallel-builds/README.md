@@ -624,12 +624,25 @@ must not end up under one signed manifest.
   run 9 ran with 6. Run 9 recommended 8, computed for its 8 targets (one
   wave instead of two), and the release run took those 8 over for 20
   targets, which gave it three waves. Only the release run's own
-  recommendation, 10, was computed for 20 targets.
+  recommendation, 10, was computed for 20 targets. In practice this has
+  worked, because consecutive runs usually build similar sets; the release
+  run was the first large change in target count.
 - **There is no serial run at production scale.** The 138 h are an
   extrapolation from the costs in section 2, for 22 targets.
 - The cause of the **1.7× per-step slowdown** is narrowed down, not
   identified.
 - **x86-64** was not part of the local overlay measurements.
+
+**More is possible, no doubt.** This is what we worked with, and it paid
+off in this campaign. Before this work, a full build took about 3.5 h per
+variant, some 12 days for all 86 (the maintainer's figure from earlier
+releases). The 2023.2.6 release took about 40 h. Not all of that is
+parallel building: the serial model in section 2 already costs 94 min per
+variant, so part of the gain came from other changes to the build host that
+this report does not cover. Parallel building alone accounts for the step
+from an extrapolated 138 h to 40 h. The larger effect is harder to count:
+without it, the intermediate test runs would have used fewer domains and
+targets, and some bugs would likely have gone unnoticed.
 
 ---
 
