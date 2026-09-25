@@ -12,6 +12,9 @@ columns are German, because `build.sh` is.
 | `run5-26091123bro` | 5 | 9 × 9, 6 workers. Resumed: `1789161357-…` is the attempt killed by a network outage (collector samples only), `1789167052-…` the resume |
 | `run6-26091206bro` | 6 | 9 × 9, 6 workers, same configuration as run 5 (repetition) |
 | `run7-26091213bro` | 7 | 48 × 9, 9 workers (one wave), golden tree reused: no prepare, no golden steps |
+| `run8-26091720bro` | 8 | 8 × 7, 7 workers (10 configured, one wave) |
+| `run9-26091802bro` | 9 | 8 × 8, 6 workers, two waves |
+| `release-26091920sta` | release | 86 × 20, 8 workers (three waves). Not part of the measurement series. `1789843017-…` is the first attempt (prepare and 14 of 20 golden steps, collector samples only), `1789913332-…` a second attempt that ended in prepare, `1789913904-…` the final attempt |
 
 ## `*.build-times.csv`
 

@@ -20,6 +20,12 @@ September 2026.
 > The German operator documentation with every option and file is
 > [`../build-sh.md`](../build-sh.md). This report is the condensed and
 > transferable part.
+>
+> **Updated 25 September 2026** (Claude Opus 5.5): runs 8 and 9 added to
+> section 5, and the production run of release 2023.2.6 (86 variants × 20
+> targets) as a data point outside the measurement series. Scheduling
+> details that were implemented but not described are added in section 4.
+> Sections 9 and 10 are brought up to date.
 
 ---
 
@@ -28,7 +34,10 @@ September 2026.
 A Freifunk community builds its Gluon firmware once per *site variant*:
 one mesh domain, with or without pre-installed SSH keys. Neanderfunk has
 86 such variants for 22 OpenWrt targets. Built serially, that takes about
-**138 hours**, so a security update waits almost a week for its images.
+**138 hours** (extrapolated from the measured costs in section 2, not run),
+so a security update waits almost a week for its images. In parallel mode,
+the 2023.2.6 release (86 variants, by then 20 targets) took about 40 hours
+of build time from scratch, 36.5 of them in its final attempt (section 5).
 
 What we found:
 
@@ -75,9 +84,10 @@ configuration*, images for every supported device of one OpenWrt *target*
 
 A community with several mesh domains needs one site configuration per
 domain. Neanderfunk has 43 domains, each in two flavours (with and without
-the community's SSH keys), so **86 site variants**. The full stable set is
-86 variants × 22 targets. Per variant there are 448 image files (306
-sysupgrade, 124 factory, 18 other).
+the community's SSH keys), so **86 site variants**. At the time of the
+measurements the full stable set was 86 variants × 22 targets. Per variant
+there were 448 image files (306 sysupgrade, 124 factory, 18 other). The
+2023.2.6 release was built for 20 targets.
 
 `build.sh` (this repository) drives Gluon's `make` for all combinations,
 signs the manifests and publishes the result. It can resume an interrupted
@@ -241,7 +251,8 @@ Scheduling details (the first two were added after runs 1–3, see
 section 6):
 
 - **Longest target first.** The queue is ordered by the mean step time of
-  each target in the previous run (LPT scheduling).
+  each target in its most recent earlier run (LPT scheduling). Targets
+  without any recorded step go to the front, since unknown may mean long.
 - **Split `-j`.** Each worker gets cores × 2 ÷ workers, at least 2 (`-j 12`
   instead of 72 with 6 workers). The golden tree keeps the full value.
 - **Staggered start.** Workers start 60 s apart, so that their compile
@@ -249,6 +260,9 @@ section 6):
 - **Abort handling.** Each worker runs in its own process group (`setsid`).
   If the main process is aborted, every group gets TERM and then KILL after
   10 s. In a test, 80 processes were gone in 1 s.
+- **A failing worker does not stop the others.** No new worker is started,
+  but the running ones finish their targets. Those are recorded as done, and
+  `--resume` then builds only what failed.
 
 ### 4.4 Measuring while building
 
@@ -260,7 +274,9 @@ A small collector (`scripts/buildcollect.py`) samples once per second:
 
 At the end it writes a recommendation for the next run, which
 `WORKERS=auto` picks up. It evaluates only samples in which **all workers
-are busy**, because ramp-up and tail say nothing about spare capacity.
+are busy**, because ramp-up and tail say nothing about spare capacity. Only
+a run that completes sets the recommendation. An aborted run may have
+sampled only its easiest phase.
 
 `build.sh` computes the mean number of busy workers (in Erlang) a second
 time, independently, from its step-time CSV: the sum of step times divided
@@ -272,7 +288,8 @@ by wall time. The two methods agree within 0.1–0.2 Erl (run 2: 4.9 against
 ## 5. Results
 
 All runs on wir-horst, Gluon v2023.2.6. Runs 1–6 used `WORKERS=6`, run 7
-used 9 workers (`WORKERS=auto`, one per target). "Golden" is the first
+used 9 workers (`WORKERS=auto`, one per target), run 8 used 7 (10
+configured, but only 7 targets) and run 9 used 6. "Golden" is the first
 domain for all targets. "Parallel" is the remaining domains, spread over the
 workers.
 
@@ -285,6 +302,8 @@ workers.
 | 5 | 12 Sep | 9 × 9 | 229 min³ | 19 | 82³ | 126 min (72) | 4.5 | 18.0 min |
 | 6 | 12 Sep | 9 × 9 | 247 min | 19 | 100 | 125 min (72) | 4.5 | 17.8 min |
 | 7 | 12 Sep | 48 × 9 | 562 min | 0⁵ | 0⁵ | 550 min (432) | 7.2 of 9 | 14.9 min |
+| 8 | 17 Sep | 8 × 7 | 181 min | 16 | 82 | 81 min (49) | 5.5 of 7 | 11.6 min |
+| 9 | 18 Sep | 8 × 8 | 215 min | 18 | 93 | 103 min (56) | 4.3 of 6 | 14.7 min |
 
 ¹ golden plus finalize. ² First run with split `-j`, LPT order and PSI.
 ³ Resumed after a network outage had killed the first attempt. Two of the
@@ -342,6 +361,49 @@ image share of that (23.7 GB) is ~290 MB per step. The planning figure of
 250 MB per step, an average over all 22 targets, underestimates runs with
 only the large targets.
 
+**Runs 8 and 9** are short test builds of 8 variants each and add little
+beyond runs 1–6. Run 8 had one wave (7 workers for 7 targets). Run 9 had
+two (6 workers, 8 targets), and 2 workers were busy for 27 of its 103
+minutes.
+
+### Production run: release 2023.2.6
+
+This run is **not part of the measurement series**. It was not planned as
+an experiment, and nothing was varied. The numbers come from the
+`buildinfo/` files the run published, evaluated with
+[`analyse.py`](analyse.py). The raw data is in
+[`data/release-26091920sta/`](data/release-26091920sta/).
+
+| | |
+|---|---|
+| Scope | 86 variants × 20 targets = 1,720 steps |
+| Workers | 8 (`WORKERS=auto`), 20 targets, so 3 waves |
+| Total | 36 h 29 min (2,190 min), 20 Sep 16:18 to 22 Sep 04:48 |
+| prepare | 82 min |
+| golden | 136 min for the remaining 6 of 20 targets, see below |
+| Parallel phase | 1,942 min (32.4 h), 1,700 steps, 6.8 Erl of 8 |
+| Mean step | 464 s |
+| Per follow-up variant | 22.9 min |
+| Output | 37,066 images, 325.7 GB |
+
+- **The golden tree was not built in this run alone.** A first attempt on
+  19 Sep ran prepare (40 min) and 14 of the 20 golden steps (about 2.5 h),
+  then stopped. A second attempt ended during prepare after 5 min. The run
+  above resumed from there. Built from scratch, the whole release therefore
+  took about 40 hours of build time, spread over three attempts.
+- **The waves are visible.** Busy workers, in minutes: 8: 1,050, 7: 351,
+  6: 51, 5: 158, 4: 247, 3: 58, 2: 20, 1: 9. `ath79-generic` was again the
+  longest target (85 steps, mean 690 s, 1,031 min in total), but with three
+  waves it was not the critical path. The third wave ended at minute 1,942.
+- **Step times under load fit runs 5–7.** The mean step of 464 s is in the
+  range of runs 5 and 6 (465–472 s with 6 workers), and below run 7 (549 s
+  with 9).
+- The collector recommended 10 workers for the next run. With 20 targets
+  that means 2 waves instead of 3, and all-busy samples showed the CPU 54 %
+  utilised. That is a prediction, not yet tested.
+- There is no serial comparison for this scope. The 138 h in the summary is
+  an extrapolation for 22 targets.
+
 ---
 
 ## 6. Findings
@@ -356,7 +418,9 @@ matches the measured 2.7–2.8.
 For planning, the full run of 86 variants is estimated at ~52 h with golden
 tree (F = 2.8), or ~48 h when the golden tree is reused. An upper bound with
 all 6 workers always busy is 6 ÷ 1.7 ≈ 3.5, i.e. ~42 h. A first estimate
-with F = W (~27 h) was far too optimistic.
+with F = W (~27 h) was far too optimistic. The 2023.2.6 release, with 20
+instead of 22 targets and 8 workers, took about 40 h from scratch (section
+5).
 
 ### 6.2 What the 1.7× is not
 
@@ -548,11 +612,15 @@ must not end up under one signed manifest.
 - **One host and few runs.** Only one configuration was repeated
   (runs 5 and 6), and not under controlled conditions. The hypervisor runs
   other guests, which the build guest cannot see beyond steal time.
-- Runs 1–6 all used **6 workers**. The wave argument predicts that 8 or 9
-  workers (one wave) are faster for 8–9 targets. That has not been measured
-  yet.
-- The **full production run** (22 targets, 86 variants) has not been done
-  in parallel mode. Its estimate rests on F measured with 6–9 targets.
+- **Worker counts were not varied systematically.** Runs 1–6 used 6
+  workers, run 7 used 9, run 8 used 7, run 9 used 6 and the release run 8.
+  The wave argument (section 6.3) is supported by runs 3, 5, 6 and 7, but no
+  run compared worker counts on the same targets and domains.
+- **The production run is a single data point** (section 5), not a
+  measurement: it was interrupted twice, and nothing was varied. The
+  collector's recommendation of 10 workers for 20 targets is untested.
+- **There is no serial run at production scale.** The 138 h are an
+  extrapolation from the costs in section 2, for 22 targets.
 - The cause of the **1.7× per-step slowdown** is narrowed down, not
   identified.
 - **x86-64** was not part of the local overlay measurements.
@@ -562,15 +630,14 @@ must not end up under one signed manifest.
 ## 10. Reproducing and reusing
 
 - `build.sh` and `scripts/` in this repository are the implementation.
-  `scripts/ovl-enter.sh` is the whole rootless overlay entry, 15 lines of
-  shell.
+  `scripts/ovl-enter.sh` is the whole rootless overlay entry.
 - [`data/`](data/) holds the `buildinfo/` files that each run publishes:
   - `*.build-times.csv`: one line per step, with start epoch and seconds
   - `*.metrics.csv.gz`: collector samples, one per second
   - `*.empfehlung.txt`: the recommendation for the next run
   - `*.summary.txt`: the summary box
 - [`analyse.py`](analyse.py) reproduces the numbers of sections 5 and 6 for
-  runs 3–6:
+  runs 3–9 and for the release run:
 
   ```bash
   python3 docs/parallel-builds/analyse.py docs/parallel-builds/data/*/
