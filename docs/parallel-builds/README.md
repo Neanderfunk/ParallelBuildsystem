@@ -633,9 +633,7 @@ must not end up under one signed manifest.
   identified.
 - **x86-64** was not part of the local overlay measurements.
 
-**More is possible, no doubt.** This is what we worked with, and it paid
-off in this campaign: the final build took about 40 h instead of an
-extrapolated 138 h serially. The larger effect is harder to count: without
+**More is possible, no doubt.** This is what we worked with. Without
 parallel builds, the intermediate test runs would have used fewer domains
 and targets, and some bugs would likely have gone unnoticed.
 
