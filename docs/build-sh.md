@@ -130,7 +130,7 @@ Später Geladenes gewinnt.
     Template-Namen.
 - Templates: `templates/<name>` sind Symlink-Ketten, die in `templates/common/` enden
   (`site.conf`, `site.mk`, `modules`, `image-customization.lua`, `prepare.sh`,
-  `i18n/`). Platzhalter wie `SITECODE`, `DOMAINHASH` ersetzt build.sh.
+  `patchrepos`, `i18n/`). Platzhalter wie `SITECODE`, `DOMAINHASH` ersetzt build.sh.
 
 ---
 
@@ -169,12 +169,17 @@ Später Geladenes gewinnt.
 
 - `GITRESET`: Gluon `reset --hard origin/<branch>`, Module `reset --hard` +
   `clean -fd` (ohne `-x`: dl/, build_dir/, staging_dir/ bleiben)
-- `prepare.sh pre-update` – Patches, die `make update` anwenden soll
+- `prepare.sh pre-update` – holt die Patch-Repos aus `patchrepos` am
+  gepinnten Commit nach `patch-repos/<name>` (braucht Netz, drei Versuche),
+  dann Patches, die `make update` anwenden soll: erst `apply.sh pre-update`
+  der Patch-Repos, dann `patches/`
 - `make update` – OpenWrt und Feeds holen und patchen
 - `MAKECLEAN`: `make clean GLUON_TARGET=…` für jedes Target
   (löscht `build_dir/target-*`, `staging_dir/target-*`, `bin/`; Toolchain bleibt)
-- `prepare.sh post-update` – Patches auf openwrt/ und Gluon-Pakete
-  (`patches/*.sh` über `lib-patch.sh`, idempotent über Marker)
+- `prepare.sh post-update` – Patches auf openwrt/ und Gluon-Pakete: prüft,
+  dass die Patch-Repos sauber auf ihrem Pin stehen, ruft deren
+  `apply.sh post-update` und danach `patches/<gruppe>/*.sh` (alle über
+  `lib-patch.sh`, idempotent über Marker)
 - Quellen herunterladen
 - Log: `assembled/prepare.log`, später in jedes Site-Verzeichnis kopiert
 
@@ -417,7 +422,9 @@ build-times.csv                     Zeiten aller Läufe
   - Gluon-Commit `origin/<branch>`
   - Targets (sortiert), `GLUONDEVICES`, `BROKEN`
   - gcc- und libc-Version
-  - `patches/` und `templates/common/` (sha256, ohne Editor-Reste)
+  - `patches/` und `templates/common/` (sha256, ohne Editor-Reste); die
+    Pin-Datei `templates/common/patchrepos` gehört dazu, ein neuer Pin eines
+    Patch-Repos baut den golden tree also neu
 - Passt der Fingerabdruck → prepare entfällt komplett, der Baum bleibt unberührt.
 - Passt er nicht → Neuaufbau. Datei wird vorher gelöscht, ein abgebrochener
   Aufbau gilt also nie als gültig.
