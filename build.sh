@@ -282,6 +282,11 @@ write_build_info ()
     echo "Firmware-Repo:  $(git_state "$SANDBOX_DIR")"
     echo "Buildsystem:    $(git_state "$BUILDSYS_DIR")"
     echo "Gluon:          $(git_state "$GLUON_DIR")"
+    if [ -n "$GLUON_COMMIT" ]; then
+      echo "Gluon-Pin:      $GLUON_COMMIT (GLUON_COMMIT in der Konfiguration)"
+    else
+      echo "Gluon-Pin:      keiner, Kopf von origin/${ALL_SITE_GLUON_BRANCHES[0]-?}"
+    fi
     echo
     # Verglichen wird gegen den Zweig "base", nicht gegen HEAD: "make update"
     # legt ueber base den Zweig "patched" mit Gluons eigenen Patches, HEAD
@@ -588,6 +593,9 @@ set_config_defaults ()
   BUILD_LOG_TIMESTAMPS=true
   GLUON_SITE_VERSION="$(date +%Y%m%d)"
   GLUONDEVICES=""
+  # Leer: Gluon auf den Kopf des Zweigs aus Spalte 2 der sites-Datei. Gesetzt:
+  # genau dieser Commit (muss auf dem Zweig liegen), siehe gluon_target_ref.
+  GLUON_COMMIT=""
   SIGNKEY_FILE="untrustworthy-buildbot-signkey.priv"
 
   BUILD_ORDER="domain"
@@ -657,6 +665,34 @@ set_config_defaults ()
 # Nicht erfasst: sites-Datei und Domainauswahl (nur gluon-site), build.sh
 # selbst, und die Laufwerte SBRANCH, DATE_SUFFIX, GLUON_SITE_VERSION, WORKERS.
 #
+# Der Stand, auf den der Gluon-Baum gesetzt wird: GLUON_COMMIT, falls in der
+# Konfiguration gepinnt, sonst der Kopf des Zweigs. Ohne Pin baut derselbe
+# Aufruf spaeter einen anderen Gluon-Stand, sobald der Zweig weiterlaeuft; mit
+# Pin laesst sich ein Release genau wieder herstellen.
+gluon_target_ref ()
+{
+  local GLUONBRANCH="$1"
+  if [ -n "$GLUON_COMMIT" ]; then
+    printf '%s' "$GLUON_COMMIT"
+  else
+    printf 'origin/%s' "$GLUONBRANCH"
+  fi
+}
+
+# Nach dem fetch: Gibt es den gepinnten Commit, und liegt er auf dem Zweig?
+# Ein Pin von einem anderen Zweig (etwa 2023.2 in einem 2025.1-Lauf) ist
+# fast sicher ein Versehen.
+check_gluon_pin ()
+{
+  local GLUONBRANCH="$1"
+  [ -n "$GLUON_COMMIT" ] || return 0
+  git -C "$GLUON_DIR" cat-file -e "$GLUON_COMMIT^{commit}" 2>/dev/null \
+    || abort "GLUON_COMMIT $GLUON_COMMIT does not exist in the Gluon tree (after git fetch)."
+  git -C "$GLUON_DIR" merge-base --is-ancestor "$GLUON_COMMIT" "origin/$GLUONBRANCH" \
+    || abort "GLUON_COMMIT $GLUON_COMMIT is not on branch $GLUONBRANCH (column 2 of the sites file)."
+  echo "Gluon pinned to $GLUON_COMMIT (branch $GLUONBRANCH)."
+}
+
 # Editor-Reste (SITE_COPY_EXCLUDES, etwa modules~) bleiben aussen vor, sonst
 # baute ein gespeicherter Editorpuffer den golden tree neu.
 golden_fingerprint ()
@@ -670,7 +706,7 @@ golden_fingerprint ()
   done
 
   {
-    echo "gluon=$(git -C "$GLUON_DIR" rev-parse --verify "origin/$GLUONBRANCH^{commit}")"
+    echo "gluon=$(git -C "$GLUON_DIR" rev-parse --verify "$(gluon_target_ref "$GLUONBRANCH")^{commit}")"
     # Sortiert: die Reihenfolge in targets.conf aendert nichts daran, was
     # kompiliert wird, und soll keinen Neubau ausloesen.
     echo "targets=$(printf '%s\n' "${BUILD_TARGETS[@]}" | sort | tr '\n' ' ')"
@@ -1783,7 +1819,7 @@ prepare_gluon_tree ()
   local -i target_index
 
   if [ "$GITRESET" = true ]; then
-    echo "Resetting the Gluon tree to origin/$GLUONBRANCH ..."
+    echo "Resetting the Gluon tree to $(gluon_target_ref "$GLUONBRANCH") ..."
     rm -rf .git/rebase-apply
     # Note: this only restores tracked files. The Gluon tree is deliberately
     # not cleaned as well: "make clean" runs before the post-update patches,
@@ -1791,7 +1827,7 @@ prepare_gluon_tree ()
     # targets/ipq40xx-chromium) have to survive from the previous run. Moving
     # every Gluon-tree patch into the pre-update phase would fix that; until
     # then, cleaning here would break "make clean" for those targets.
-    git reset --hard "origin/$GLUONBRANCH"
+    git reset --hard "$(gluon_target_ref "$GLUONBRANCH")"
 
     # Four git repositories are cascaded here: this build environment, the
     # Gluon tree, the OpenWrt tree inside it and the package feeds beside it.
@@ -2945,6 +2981,7 @@ build_all_images ()
   pushd "$GLUON_DIR" >/dev/null
   echo "Git fetching..."
   git fetch --all
+  check_gluon_pin "${ALL_SITE_GLUON_BRANCHES[0]}"
 
   local UPTIME
   local -i site_index

@@ -84,6 +84,14 @@ BUILD_LOG=false
 BUILD_LOG_TIMESTAMPS=true
 GLUON_SITE_VERSION="$(date +%Y%m%d)"
 GLUONDEVICES=""
+
+# GLUON_COMMIT           Leer = Gluon auf den Kopf des Zweigs aus Spalte 2 der
+#                        sites-Datei setzen (bisheriges Verhalten). Gesetzt =
+#                        genau dieser Commit; er muss auf dem Zweig liegen,
+#                        sonst bricht build.sh nach dem fetch ab. Damit laesst
+#                        sich ein Release spaeter genau wieder herstellen;
+#                        build-info.txt nennt den Pin.
+GLUON_COMMIT=""
 SIGNKEY_FILE="untrustworthy-buildbot-signkey.priv"
 
 

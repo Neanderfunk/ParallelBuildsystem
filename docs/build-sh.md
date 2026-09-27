@@ -105,6 +105,7 @@ Später Geladenes gewinnt.
 | `BUILD_LOG_TIMESTAMPS` | `true` | `[HH:MM:SS]` vor jeder Zeile (braucht gawk) |
 | `GLUON_SITE_VERSION` | Datum | Versionsstempel der site.conf |
 | `GLUONDEVICES` | leer | leer = alle Geräte, sonst Liste |
+| `GLUON_COMMIT` | leer | leer = Kopf des Gluon-Zweigs aus der sites-Datei; gesetzt = genau dieser Commit (muss auf dem Zweig liegen, sonst Abbruch), geht in den Fingerabdruck und in `build-info.txt` ein |
 | `SIGNKEY_FILE` | | Schlüssel unter `buildkeys/` |
 | `BUILD_ORDER` | `domain` | seriell: `domain` (alle Targets einer Domain) oder `target` (alle Domains eines Targets) |
 | `BUILD_TIMES_FILE` | `build-times.csv` | CSV je Bauschritt, wird angehängt |
