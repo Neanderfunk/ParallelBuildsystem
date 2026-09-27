@@ -100,6 +100,24 @@ while read -r template; do
       printf '%s\n' "$output" | sed 's/^/      /' >&2
     fi
   fi
+
+  # Auch Teile, die image-customization.lua per include() nachlaedt (Gluon ab
+  # 2025.1). include() kennt keine Unterverzeichnisse, die Teile liegen also
+  # flach daneben; geprueft wird jede weitere .lua-Datei im Template. Ein
+  # Syntaxfehler dort fiele sonst erst im Bau auf, in luasrcdiet und mit
+  # entsprechend unklarer Meldung.
+  for part in "$template"/*.lua; do
+    [ -f "$part" ] || continue
+    [ "$(basename "$part")" = image-customization.lua ] && continue
+    checked+=1
+    if output="$("$LUA" -e "assert(loadfile('$part'))" 2>&1)"; then
+      log_ok "    $(basename "$part"): in Ordnung"
+    else
+      failed+=1
+      log_err "    $(basename "$part"): FEHLER"
+      printf '%s\n' "$output" | sed 's/^/      /' >&2
+    fi
+  done
 done < <(find templates -mindepth 1 -maxdepth 1 -type d | sort)
 
 echo
