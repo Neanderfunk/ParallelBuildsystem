@@ -31,7 +31,7 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 | `build.conf` | *wie* gebaut wird: Version, Aufräumen, Parallelität, Gluon-Optionen |
 | `targets.conf` | *welche Hardware*: `GLUON_TARGETS` |
 | `domains.conf` | *welche Domains*: `SITES_FILE`, `DOMAINS_INCLUDE`, `DOMAINS_EXCLUDE` |
-| `[target …]` | überschreibt `GLUON_TARGETS`, für einzelne Testbauten |
+| `[target …]` | überschreibt `GLUON_TARGETS`, für einzelne Testbauten; jedes muss in `targets.conf` stehen (aktiv oder mit `-`), sonst sofort Abbruch |
 | `--resume` | abgebrochenen Lauf fortsetzen: nur Fehlendes bauen, Release-String und Ausgabeverzeichnis bleiben |
 | `--restart` | übrig gebliebenen Lauf verwerfen (`images/running` löschen) und neu anfangen |
 | `--detach` | abgekoppelt in einer tmux-Sitzung laufen und gleich verbinden, siehe unten |
@@ -198,6 +198,8 @@ Später Geladenes gewinnt.
   dass die Patch-Repos sauber auf ihrem Pin stehen, ruft deren
   `apply.sh post-update` und danach `patches/<gruppe>/*.sh` (alle über
   `lib-patch.sh`, idempotent über Marker)
+- danach `make list-targets`: kennt Gluon ein Target des Laufs nicht (etwa
+  ein Tippfehler in `targets.conf`), Abbruch vor dem golden tree
 - Quellen herunterladen
 - Log: `assembled/prepare.log`, später in jedes Site-Verzeichnis kopiert
 

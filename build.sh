@@ -1865,6 +1865,8 @@ prepare_gluon_tree ()
   echo "Applying the post-update patches from patches/ ..."
   "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" post-update
 
+  check_targets_known "$ARGS"
+
   # Erst jetzt, denn die post-update-Patches aendern Paketdefinitionen im
   # OpenWrt-Baum - vorher gezogen waeren es teils die falschen Quellen.
   download_sources "$ARGS"
@@ -2325,7 +2327,44 @@ resolve_targets ()
     BUILD_TARGETS=( "${ENABLED_TARGETS[@]}" )
     echo "Building the ${#BUILD_TARGETS[@]} targets enabled in the build configuration."
   else
+    # Targets von der Kommandozeile muessen in targets.conf stehen, aktiv oder
+    # mit "-" abgeschaltet. Ein Tippfehler faellt so sofort auf, statt dass der
+    # Lauf Gluon zuruecksetzt und bis "make clean" weiterlaeuft.
+    local T KNOWN
+    local -a UNBEKANNT=()
+    for T in "${BUILD_TARGETS[@]}"; do
+      local FOUND=false
+      for KNOWN in "${GLUON_TARGETS[@]}"; do
+        if [ "$T" = "${KNOWN#-}" ]; then FOUND=true; break; fi
+      done
+      if [ "$FOUND" = false ]; then UNBEKANNT+=( "$T" ); fi
+    done
+    if (( ${#UNBEKANNT[@]} > 0 )); then
+      abort "Unknown target(s) on the command line: ${UNBEKANNT[*]}. Targets given on the command line have to be listed in the target configuration (enabled or disabled with \"-\"): ${GLUON_TARGETS[*]#-}"
+    fi
     echo "Building the ${#BUILD_TARGETS[@]} targets given on the command line."
+  fi
+}
+
+# Nach den post-update-Patches: Kennt Gluon jedes Target dieses Laufs? Erst
+# jetzt, weil zusaetzliche Targets (etwa ath79-mikrotik) erst durch Patches
+# entstehen. Faengt Tippfehler in targets.conf ab, bevor der golden tree baut.
+check_targets_known ()
+{
+  local LISTE T
+  LISTE="$(eval "make list-targets $1" 2>/dev/null || true)"
+  if [ -z "$LISTE" ]; then
+    echo "Warning: \"make list-targets\" returned nothing, the target names are not checked."
+    return 0
+  fi
+  local -a UNBEKANNT=()
+  for T in "${TARGETS[@]}"; do
+    if ! printf '%s\n' "$LISTE" | grep -qxF -- "$T"; then
+      UNBEKANNT+=( "$T" )
+    fi
+  done
+  if (( ${#UNBEKANNT[@]} > 0 )); then
+    abort "Gluon does not know the target(s) ${UNBEKANNT[*]} (after all patches). Known: $(printf '%s ' $LISTE)"
   fi
 }
 
