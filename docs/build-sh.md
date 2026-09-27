@@ -70,7 +70,7 @@ Beispiele:
 | Zweck | Aufruf |
 |---|---|
 | Volllauf stable | `../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf` |
-| Broken-Testlauf | `../ParallelBuildsystem/build.sh build.conf targets.conf domains-broken.conf` |
+| eigene Auswahl (Test, Turnaround) | `../ParallelBuildsystem/build.sh build.conf targets.conf domains-test.local.conf` |
 | nur ein Target | `../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf ramips-mt7621` |
 | nach Abbruch weiter | `../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf --resume` |
 | alten Rest wegwerfen | `../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf --restart` |
