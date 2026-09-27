@@ -11,7 +11,8 @@
 # die Regeln der Pakete. Hier geht es nur darum, einen Tippfehler zu finden,
 # bevor "make update" eine halbe Stunde laeuft.
 #
-# Aufruf von ueberall:  tests/check-site-conf.sh [--optional]
+# Aufruf aus dem Konfigurationsverzeichnis (dem mit templates/), so wie
+# build.sh es tut:  <buildsystem>/tests/check-site-conf.sh [--optional]
 #
 # --optional: fehlt ein Lua-Interpreter, wird nur gewarnt statt abgebrochen.
 # Das nutzt build.sh, damit ein Build-Host ohne System-Lua nicht am Vorabcheck
@@ -29,8 +30,10 @@ case "${1-}" in
 esac
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-REPO_DIR="$( dirname "$SCRIPT_DIR" )"
-cd "$REPO_DIR" || exit 1
+if [ ! -d templates ]; then
+  echo "check-site-conf.sh: kein templates/ in $PWD - aus dem Konfigurationsverzeichnis aufrufen." >&2
+  exit 1
+fi
 
 # Farben nur, wenn die Ausgabe auf einem Terminal landet - im CI-Log stoeren
 # die Escape-Sequenzen.
@@ -75,7 +78,7 @@ while read -r template; do
 
   if [ -f "$template/site.conf" ]; then
     checked+=1
-    if output="$(GLUON_SITEDIR="$template" "$LUA" tests/site_config.lua 2>&1)"; then
+    if output="$(GLUON_SITEDIR="$template" "$LUA" "$SCRIPT_DIR/site_config.lua" 2>&1)"; then
       log_ok "    site.conf: in Ordnung ($(printf '%s' "$output" | wc -c) Byte JSON)"
     else
       failed+=1

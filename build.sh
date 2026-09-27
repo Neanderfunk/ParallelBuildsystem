@@ -280,6 +280,7 @@ write_build_info ()
     echo "Aufruf:         $BUILD_COMMAND_LINE"
     echo
     echo "Firmware-Repo:  $(git_state "$SANDBOX_DIR")"
+    echo "Buildsystem:    $(git_state "$BUILDSYS_DIR")"
     echo "Gluon:          $(git_state "$GLUON_DIR")"
     echo
     # Verglichen wird gegen den Zweig "base", nicht gegen HEAD: "make update"
@@ -715,7 +716,7 @@ ovl_selftest ()
     || { echo "kann $T nicht anlegen"; return 1; }
   echo golden > "$T/gold/stand"
 
-  OUT="$(unshare -Urm "$SANDBOX_DIR/scripts/ovl-enter.sh" \
+  OUT="$(unshare -Urm "$BUILDSYS_DIR/scripts/ovl-enter.sh" \
            "$T/gold" "$T/w" "$T/gold" "$(id -u)" "$(id -g)" \
            bash -c '
              [ "$(id -u)" = "$1" ] || { echo "UID-Wechsel misslungen (uid $(id -u))"; exit 1; }
@@ -2033,7 +2034,7 @@ finalize_site ()
   echo "$MAKE_CMD"
   eval "$MAKE_CMD"
 
-  printf -v SIGN_CMD "$SANDBOX_DIR/esign $SIGN_ARGS"
+  printf -v SIGN_CMD "$BUILDSYS_DIR/esign $SIGN_ARGS"
   echo "$SIGN_CMD"
   eval "$SIGN_CMD"
 
@@ -2058,7 +2059,7 @@ finalize_site ()
 
   # Keep the build script and all three configurations next to the images, so
   # that it stays visible with which settings they were built.
-  cp -- "$SANDBOX_DIR/build.sh" "$SITE_IMAGE_DIR/"
+  cp -- "$BUILD_SH" "$SITE_IMAGE_DIR/"
   cp -- "$BUILD_CONF_FILE" "$TARGETS_CONF_FILE" "$DOMAINS_CONF_FILE" "$SITE_IMAGE_DIR/"
 
   # Das Patch-Protokoll liegt eine Ebene ueber dem Site-Verzeichnis und wuerde
@@ -2401,7 +2402,7 @@ collector_start ()
     ln -f -- "$METRICS_DIR/$BUILD_RUN_ID.csv" "$LIVE/$BUILD_RUN_ID.metrics.csv" 2>/dev/null || true
     ln -f -- "$METRICS_DIR/$BUILD_RUN_ID.log" "$LIVE/$BUILD_RUN_ID.collector.log" 2>/dev/null || true
   fi
-  python3 "$SANDBOX_DIR/scripts/buildcollect.py" \
+  python3 "$BUILDSYS_DIR/scripts/buildcollect.py" \
     "$STATUS_DIR" "$METRICS_DIR/$BUILD_RUN_ID.csv" "$METRICS_DIR/$BUILD_RUN_ID.empfehlung.txt" \
     "$SANDBOX_DIR" "$WORKERS" "$BUILD_RUN_ID" "${#BUILD_TARGETS[@]}" \
     > "$METRICS_DIR/$BUILD_RUN_ID.log" 2>&1 &
@@ -2620,7 +2621,7 @@ start_worker ()
     # trifft es alles, was der Worker gestartet hat, und nicht den Hauptprozess.
     # Ohne fork, weil die Subshell kein Gruppenleiter ist; die PID in $! bleibt
     # also die des Workers, und damit auch die Gruppennummer.
-    exec setsid unshare -Urm "$SANDBOX_DIR/scripts/ovl-enter.sh" \
+    exec setsid unshare -Urm "$BUILDSYS_DIR/scripts/ovl-enter.sh" \
       "$GLUON_DIR" "$W" "$GLUON_DIR" "$(id -u)" "$(id -g)" \
       "$BUILD_SH" "--worker=$TARGET" \
       "$BUILD_CONF_FILE" "$TARGETS_CONF_FILE" "$DOMAINS_CONF_FILE" "${BUILD_TARGETS[@]}"
@@ -3382,12 +3383,18 @@ if (( $# < 3 )); then
   exit 0
 fi
 
-SANDBOX_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Zwei Verzeichnisse: das des Buildsystems (build.sh, esign, scripts/, tests/)
+# und das Arbeitsverzeichnis, aus dem build.sh aufgerufen wird. Das ist die
+# Konfiguration einer Community (templates/, patches/, buildkeys/, die
+# Konfigurations- und Sites-Dateien); dort entstehen auch gluon/, images/,
+# assembled/ und die Metriken.
+BUILDSYS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SANDBOX_DIR="$PWD"
 
 # Die Datei, die gerade laeuft. Ein Worker muss genau diese starten und nicht
 # stur "build.sh": laeuft eine Kopie oder eine umbenannte Fassung, bekaeme er
 # sonst eine andere Version - im schlimmsten Fall eine ohne --worker.
-BUILD_SH="$SANDBOX_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+BUILD_SH="$BUILDSYS_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 
 # Bauzeit je Domain, eine Zeile "<template>/<site_code><TAB><sekunden>" je
 # erledigtem Bauschritt. Schluessel mit Template, weil key- und nokeys-Variante
@@ -3436,12 +3443,12 @@ BUILD_START_EPOCH="$(date +%s)"
 printf -v BUILD_COMMAND_LINE "%q " "$0" "$@"
 BUILD_COMMAND_LINE="${BUILD_COMMAND_LINE% }"
 
-# generate_site_config still works with paths relative to the current directory
-# ("templates/...", "assembled/...", "buildkeys/..."), so build.sh has to be
-# started from its own directory. Saying so plainly beats failing later with a
-# puzzling "cp: cannot stat 'templates/...'".
-if [ "$PWD" != "$SANDBOX_DIR" ]; then
-  abort "build.sh has to be started from its own directory ($SANDBOX_DIR), the current one is $PWD."
+# build.sh runs in the configuration directory of a community and finds
+# everything there by relative paths ("templates/...", "assembled/...",
+# "buildkeys/..."). Saying plainly that the current directory is not one beats
+# failing later with a puzzling "cp: cannot stat 'templates/...'".
+if [ ! -d "$SANDBOX_DIR/templates" ] || [ ! -d "$SANDBOX_DIR/patches" ]; then
+  abort "build.sh has to be started from a configuration directory (one with templates/ and patches/, e.g. a clone of Neanderfunk/FirmwareConfigs or a copy of examples/), the current one is $PWD. Call it as <path-to-ParallelBuildsystem>/build.sh from there."
 fi
 
 if [ "$DETACH" = true ] && [ -z "$WORKER_TARGET" ]; then
@@ -3505,7 +3512,7 @@ ensure_gluon_tree
 # "make update" - Gluons eigene, semantische Pruefung (CheckSite) laeuft erst
 # dort. "--optional": fehlt auf dem Host ein Lua, wird gewarnt statt
 # abgebrochen.
-"$SANDBOX_DIR/tests/check-site-conf.sh" --optional
+"$BUILDSYS_DIR/tests/check-site-conf.sh" --optional
 
 detect_timestamp_awk
 
