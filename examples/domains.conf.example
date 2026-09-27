@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# domains.conf - welche Domains gebaut werden
+#
+# Wird von build.sh als dritter Parameter eingelesen:
+#   ./build.sh build.conf targets.conf domains.conf
+#
+# Diese Datei enthaelt nur die Auswahl. Die Domaindaten selbst - 33 Felder je
+# Zeile - stehen unveraendert in der sites-Datei.
+# ---------------------------------------------------------------------------
+
+
+# --- Woher die Domaindaten kommen -------------------------------------------
+#
+# Relative Pfade gelten ab dem Konfigurationsverzeichnis, aus dem build.sh
+# aufgerufen wird.
+#
+SITES_FILE="sites.example"
+
+
+# --- Welche Domains daraus gebaut werden ------------------------------------
+#
+# Angesprochen werden Domains ueber ihren **Template-Namen**, also Feld 3 der
+# sites-Datei (z. B. "21_dias-key"). Das ist das einzige Feld, das je Zeile
+# eindeutig ist: die key- und die nokeys-Variante einer Domain teilen sich
+# denselben site_code.
+#
+# DOMAINS_INCLUDE   ( all ) baut alle Domains der sites-Datei. Andernfalls
+#                   genau die aufgefuehrten Template-Namen.
+# DOMAINS_EXCLUDE   nimmt Domains wieder heraus und gewinnt gegen INCLUDE.
+#
+# Ein Name, der in der sites-Datei nicht vorkommt, laesst den Lauf mit einer
+# Fehlermeldung abbrechen - ein Tippfehler baut also nicht stillschweigend den
+# falschen Umfang.
+#
+# Zum Ueberspringen einer Domain muss in der sites-Datei nichts mehr
+# auskommentiert werden.
+#
+DOMAINS_INCLUDE=( 21_dias )
+
+DOMAINS_EXCLUDE=()

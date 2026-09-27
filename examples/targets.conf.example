@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# targets.conf - welche Hardware gebaut wird
+#
+# Wird von build.sh als zweiter Parameter eingelesen:
+#   ./build.sh build.conf targets.conf domains.conf
+#
+# Die Reihenfolge dieser Liste ist zugleich die Baureihenfolge.
+#
+# Ein Target wird deaktiviert, indem ihm ein "-" vorangestellt wird. Es bleibt
+# damit an seiner Position sichtbar, statt auskommentiert zu werden, und laesst
+# sich durch Entfernen des einen Zeichens wieder aktivieren. Hinter dem Target
+# kann in derselben Zeile ein Kommentar stehen, der den Grund festhaelt.
+#
+# Werden build.sh nach den drei Konfigurationsdateien noch Targets uebergeben
+# ("build.sh build.conf targets.conf domains.conf ath79-generic"), hat das
+# Vorrang vor dieser Liste. Das ist fuer einzelne Testbuilds gedacht - der
+# regulaere Build-Umfang wird hier gepflegt.
+#
+# ---------------------------------------------------------------------------
+
+GLUON_TARGETS=(
+  ath79-generic
+  ramips-mt7621
+  -x86-64               # deaktiviert: fuehrendes "-"
+)

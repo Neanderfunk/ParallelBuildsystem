@@ -1,0 +1,237 @@
+# ---------------------------------------------------------------------------
+# build.conf - Steuerdatei fuer build.sh
+#
+# Diese Datei sagt, *wie* gebaut wird. Was gebaut wird, steht daneben:
+#
+#   ./build.sh build.conf targets.conf domains.conf
+#
+#   build.conf    diese Datei - Version, Aufraeumen, Parallelitaet,
+#                 Baureihenfolge, Gluon-Optionen
+#   targets.conf  welche Hardware  (GLUON_TARGETS)
+#   domains.conf  welche Domains   (SITES_FILE, DOMAINS_INCLUDE/EXCLUDE)
+#
+# Reihenfolge beim Laden - spaeteres ueberschreibt frueheres:
+#   1. die Vorgabewerte aus build.sh   (set_config_defaults)
+#   2. diese Datei
+#   3. build.local.conf                (optional, nicht in Git)
+#
+# build.local.conf ist fuer maschinenabhaengige Einstellungen gedacht
+# (z. B. MAKE_J_VAL auf einem kleineren Rechner) und wird von Git ignoriert.
+# ---------------------------------------------------------------------------
+
+
+# --- Versionsbezeichner der Firmware (SBRANCH) -----------------------------
+#
+# SBRANCH_MODE bestimmt, wie die Versionsbezeichnung gebildet wird:
+#
+#   fixed     SBRANCH_FIXED wird unveraendert uebernommen. Fuer Releases,
+#             die reproduzierbar mehrfach gebaut werden sollen.
+#   date      <JJMMTTHH> plus die ersten 3 Zeichen des Release-Branches des
+#             ersten Eintrags der sites-Datei, z. B. "26030610sta".
+#   datetime  <JJJJMMTTHHMM>, reiner Zeitstempel ohne Branch-Kuerzel.
+#
+SBRANCH_MODE="date"
+SBRANCH_FIXED="26030610sta"
+
+
+# --- Aufraeumen vor dem Build ----------------------------------------------
+#
+# MAKECLEAN  einmalig "make clean" vor dem ersten Site-Build.
+# GITRESET   Gluon- und OpenWrt-Checkout vor dem ersten Build hart auf den
+#            Stand des Remote-Branches zuruecksetzen. Verwirft dort lokale
+#            Aenderungen - mit Bedacht einschalten.
+#
+MAKECLEAN=true
+GITRESET=true
+
+
+# --- Parallelitaet ----------------------------------------------------------
+#
+# MAKE_J_VAL     Anzahl paralleler make-Jobs.
+#                0 = automatisch: CPU-Kerne x MAKE_J_FACTOR.
+# MAKE_J_FACTOR  Multiplikator fuer die automatische Berechnung.
+#
+MAKE_J_VAL=0
+MAKE_J_FACTOR=2
+
+
+# --- Gluon-Optionen ---------------------------------------------------------
+#
+# BROKEN                 1 = auch als "broken" markierte Targets/Geraete bauen.
+# AUTOUPDATER_ENABLED    Autoupdater in den Images aktivieren (setzt
+#                        GLUON_AUTOUPDATER_ENABLED auf 1 bzw. 0). Der Branch
+#                        kommt aus Feld 1 der sites-Datei und geht als
+#                        GLUON_AUTOUPDATER_BRANCH mit; er bestimmt zugleich,
+#                        fuer welchen Branch "make manifest" schreibt.
+#                        Hinweis: site.mk setzt GLUON_AUTOUPDATER_ENABLED ?= 1,
+#                        weshalb "false" frueher wirkungslos war - jetzt
+#                        uebersteuert die Kommandozeile das.
+# VERBOSE_BUILD          true = "V=s", volles Build-Log mit allen Kommandos.
+# BUILD_LOG              true = zusaetzlich Gluons eigene Logdateien schreiben.
+# BUILD_LOG_TIMESTAMPS   true = jede Zeile der Bau- und Patch-Logs bekommt einen
+#                        Zeitstempel [HH:MM:SS]. Braucht ein awk mit strftime
+#                        (gawk); fehlt das, laeuft die Ausgabe unveraendert durch.
+# GLUON_SITE_VERSION     Versionsstempel der site-Konfiguration.
+# GLUONDEVICES           Leer = alle Geraete des Targets bauen. Andernfalls
+#                        eine mit Leerzeichen getrennte Liste von Geraeten,
+#                        z. B. "avm-fritz-box-4020 tp-link-tl-wdr4300-v1".
+# SIGNKEY_FILE           Signaturschluessel, relativ zum Verzeichnis buildkeys/.
+#
+BROKEN=1
+AUTOUPDATER_ENABLED=true
+VERBOSE_BUILD=true
+BUILD_LOG=false
+BUILD_LOG_TIMESTAMPS=true
+GLUON_SITE_VERSION="$(date +%Y%m%d)"
+GLUONDEVICES=""
+SIGNKEY_FILE="untrustworthy-buildbot-signkey.priv"
+
+
+# --- Baureihenfolge ---------------------------------------------------------
+#
+# Die Arbeitseinheit ist immer "eine Domain x ein Target". BUILD_ORDER legt nur
+# fest, in welcher Reihenfolge diese Einheiten abgearbeitet werden:
+#
+#   domain  Erst alle Targets einer Domain, dann die naechste Domain.
+#           Das ist das historische Verhalten.
+#   target  Erst alle Domains eines Targets, dann das naechste Target.
+#
+# Beide Reihenfolgen bauen exakt dieselben Images; nur die Reihenfolge der
+# make-Aufrufe unterscheidet sich. Interessant ist das, weil ein Target-Wechsel
+# Gluon dazu bringt, openwrt/.config neu zu schreiben, und weil bei "target"
+# die Build-Verzeichnisse eines Targets ueber alle Domains hinweg im
+# Seitencache warm bleiben. Bei 28 Targets sind das 28 statt 2408
+# Target-Wechsel. Ob sich das lohnt, haengt vom Build-Host ab und laesst sich
+# nur messen - dafuer ist BUILD_TIMES_FILE da.
+#
+# BUILD_TIMES_FILE  CSV mit einer Zeile je Bauschritt. Die Datei wird ueber
+#                   Laeufe hinweg *angehaengt*, muss also vor einem
+#                   Vergleichslauf nicht weggeraeumt werden.
+#
+#                   Spalten:
+#                     run_id,timestamp,epoch,build_order,phase,
+#                     template,site_code,target,seconds,note
+#
+#                   phase ist run_start, prepare, build, finalize oder run_end.
+#                   run_id identifiziert den Lauf, build_order steht in jeder
+#                   Zeile - ohne beides waeren zwei Laeufe in einer Datei nicht
+#                   auseinanderzuhalten.
+#
+#                   Robustheit gegen abgebrochene Laeufe:
+#                     - run_start haelt in note die erwartete Schrittzahl fest
+#                       (domains, targets, steps, sbranch).
+#                     - run_end wird von einem EXIT-Trap geschrieben und traegt
+#                       in note den Exit-Status (exit=0, exit=2, exit=143 ...).
+#                     - Ein Lauf ohne run_end wurde hart abgeschossen (SIGKILL,
+#                       OOM, Stromausfall) und darf nicht ausgewertet werden.
+#                   Zum Pruefen: je run_id die Zahl der build-Zeilen gegen
+#                   steps aus run_start halten.
+#
+BUILD_ORDER="domain"
+BUILD_TIMES_FILE="$SANDBOX_DIR/build-times.csv"
+
+
+# --- Parallelbetrieb --------------------------------------------------------
+#
+# WORKERS             Zahl der Targets, die gleichzeitig gebaut werden.
+#                     1 = seriell wie bisher, ohne Overlay - der Default.
+#
+#                     Ab 2 baut jeder Worker ein Target ueber alle Domains, in
+#                     einem eigenen Overlay ueber dem durchgebauten Gluon-Baum
+#                     (golden tree). Das Overlay liegt am Originalpfad des
+#                     Baums, damit OpenWrts .prepared-Signaturen gueltig
+#                     bleiben, und wird nach dem Target verworfen.
+#
+#                     Warum das lohnt: ein Imagebau laeuft gemessen zu drei
+#                     Vierteln mit weniger als vier Kernen, auf wir-horst in
+#                     einer Folgedomain mit 8 % Auslastung bei einem Median von
+#                     1,3 Kernen. make -j wirkt nur innerhalb eines Targets.
+#                     Begrenzend ist bei mehreren Workern eher die Platte als
+#                     die CPU (kurze Schreibbursts beim Ablegen der Images).
+#
+#                     Voraussetzungen, prueft build.sh beim Start: unshare aus
+#                     util-linux ab 2.38 (--map-user), flock, Kernel ab 5.11
+#                     (overlayfs mit userxattr), und unprivilegierte
+#                     User-Namespaces. Weder root noch sudo noch Docker.
+#                     Fehlt davon etwas, baut der Lauf SERIELL weiter - mit
+#                     fetter Warnung am Anfang und Erinnerung am Ende.
+#
+# WORKER_START_DELAY  Sekunden zwischen dem Start zweier Worker. Die Last eines
+#                     Builds ist bimodal - lange serielle Strecken, kurze
+#                     Vollastphasen. Starten alle zugleich, laufen sie anfangs
+#                     synchron durch dieselben Phasen, und genau die Spitzen
+#                     kollidieren. Ein Versatz entkoppelt sie, danach driften
+#                     sie ohnehin auseinander.
+#
+#                     WORKERS=auto nimmt die Empfehlung des letzten
+#                     erfolgreichen Laufs (siehe METRICS), beim ersten Mal
+#                     WORKERS_AUTO_START.
+#
+# METRICS             true: ein Collector (scripts/buildcollect.py) sampelt
+#                     waehrend des Laufs CPU- und Plattenlast, jede Probe mit
+#                     der Phase, die die Prozesse gerade melden. Ergebnis in
+#                     metrics/<lauf>.csv, dazu eine Empfehlung fuer die
+#                     Worker-Zahl des NAECHSTEN Laufs in metrics/empfehlung.txt.
+#
+#                     Ausgewertet wird nur, wenn die volle Worker-Zahl im
+#                     Imagebau steckt - Hoch- und Auslaufen des Laufs, in denen
+#                     Worker fehlen, sagen nichts ueber freie Kapazitaet. Die
+#                     Empfehlung ist gedaempft (hoechstens +-1 je Lauf) und
+#                     begrenzt (1 bis Kerne/2). Nur ein erfolgreicher Lauf
+#                     setzt sie. Die Begruendung steht mit in der Datei.
+#
+#                     Auch im seriellen Betrieb nuetzlich: die Empfehlung zeigt,
+#                     ob sich der Parallelbetrieb auf diesem Host lohnt, bevor
+#                     man ihn einschaltet. Braucht python3; ohne laeuft der
+#                     Lauf mit Warnung ohne Metriken weiter.
+#
+WORKERS=1
+WORKER_START_DELAY=60
+WORKERS_AUTO_START=3
+METRICS=true
+
+
+# --- Plattenplatz ------------------------------------------------------------
+#
+# SPACE_CHECK         true: vor dem Lauf schaetzen, ob der Platz reicht. Reicht
+#                     er fuer den seriellen Lauf nicht, bricht build.sh gleich
+#                     ab. Reicht er seriell, aber nicht fuer alle Worker, baut
+#                     dieser Lauf mit so vielen Workern, wie passen - unter zwei
+#                     seriell, mit der BUILD_ORDER von oben. Laut angekuendigt.
+#                     WORKERS=1 ist ohnehin jederzeit der Schalter fuer
+#                     "seriell wie frueher".
+#
+# Die Schaetzung, gemessen am 09./10.09.2026 (Lauf mit 22 Targets, V=s):
+#
+# SPACE_UNIT_MB          je Domain x Target: Images im Mittel ~185 MB, das
+#                        Paketverzeichnis (je site_code) ~35 MB, das Buildlog
+#                        gepackt ~1 MB (ungepackt liegt es nur, solange sein
+#                        Bauschritt laeuft), dazu Luft. Bei 96 Varianten x 22
+#                        Targets kommen so ~530 GB zusammen.
+# SPACE_TARGET_MB        je Target einmal: die eingesammelten opkg-Feeds
+# SPACE_WORKER_BASE_MB   je Worker: sein upperdir, 2,8 GB fuer die erste Domain
+# SPACE_WORKER_DOMAIN_MB ... plus 0,2 GB je weitere Domain
+# SPACE_RESERVE_MB       Luft, die nicht verplant wird
+#
+# DISK_FULL_MB           unter diesem Wert nennt ein Abbruch die volle Platte
+#                        ausdruecklich als wahrscheinliche Ursache
+#
+SPACE_CHECK=true
+SPACE_UNIT_MB=250
+SPACE_TARGET_MB=50
+SPACE_WORKER_BASE_MB=3000
+SPACE_WORKER_DOMAIN_MB=200
+SPACE_RESERVE_MB=20480
+DISK_FULL_MB=1024
+
+
+# --- Ausgabe ----------------------------------------------------------------
+#
+# DATE_SUFFIX_FORMAT  date-Formatstring fuer den Namen des Ausgabeverzeichnisses
+#                     images/images-<suffix>. "+%s" ergibt einen Unix-Zeitstempel,
+#                     "+%Y%m%d-%H%M" ein lesbares Datum.
+# SITE_COPY_EXCLUDES  Muster, die beim Kopieren der site-Konfiguration in das
+#                     Image-Verzeichnis uebersprungen werden.
+#
+DATE_SUFFIX_FORMAT="+%s"
+SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
