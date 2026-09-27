@@ -71,7 +71,8 @@ nicht frei von Race Conditions: Ab und zu scheitert ein Paket, weil ein
 anderer Job dieselbe Datei in `staging_dir/` gerade schreibt. Beobachtet am
 27.09.2026 unter Gluon 2025.1 bei x86-64: das Paket `perl` (kommt über
 Gluons `ALL_NONSHARED`) fand `ExtUtils/Liblist/Kid.pm` des Host-perl halb
-geschrieben vor.
+geschrieben vor. Gluon v2023.2.x baute perl deshalb seriell; für 2025.1 holt
+Neanderfunk das mit `gluon-patches-fixes` `bugfixes/perl-no-parallel` nach.
 
 Abhilfe: den Lauf mit `--resume` fortsetzen, der zweite Versuch findet die
 fertigen Dateien vor. Scheitert dasselbe Paket an derselben Stelle erneut,
