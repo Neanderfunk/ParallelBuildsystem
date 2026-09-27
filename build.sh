@@ -314,6 +314,36 @@ write_build_info ()
       done
     )
 
+    # Patch-Repos, sofern die Site eine Pin-Datei patchrepos hat (siehe
+    # templates/common/prepare.sh): Soll-Commit aus der Datei gegen den Stand,
+    # den prepare.sh unter patch-repos/<name> ausgecheckt hat.
+    local PIN_FILE="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/patchrepos"
+    if [ -f "$PIN_FILE" ]; then
+      echo
+      echo "Patch-Repos, Soll (patchrepos) gegen Ist (patch-repos/<name>):"
+      (
+        PATCHREPOS=""
+        . "$PIN_FILE" 2>/dev/null || exit 0
+        for NAME in $PATCHREPOS; do
+          PREFIX="PATCHREPO_$(printf '%s' "$NAME" | tr 'a-z-' 'A-Z_')"
+          eval "PINNED=\${${PREFIX}_COMMIT:-}"
+          eval "REPO=\${${PREFIX}_REPO:-}"
+          DIR="$SANDBOX_DIR/patch-repos/$NAME"
+          ACTUAL="$(git -C "$DIR" rev-parse HEAD 2>/dev/null || echo "-")"
+          if [ "$PINNED" = "$ACTUAL" ]; then
+            if [ -z "$(git -C "$DIR" status --porcelain 2>/dev/null)" ]; then
+              printf "  %-22s %s\n" "$NAME" "$PINNED"
+            else
+              printf "  %-22s %s  (lokale Aenderungen)\n" "$NAME" "$PINNED"
+            fi
+          else
+            printf "  %-22s Soll %s\n  %-22s Ist  %s   ABWEICHUNG\n" \
+                   "$NAME" "${PINNED:-?}" "" "$ACTUAL"
+          fi
+          printf "  %-22s %s\n" "" "${REPO:-?}"
+        done
+      )
+    fi
     echo
     echo "Targets:        ${TARGETS[*]}"
     echo "Domains:        ${ALL_SITE_CODES[*]}"
