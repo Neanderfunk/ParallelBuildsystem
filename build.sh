@@ -318,9 +318,23 @@ write_build_info ()
     echo "Targets:        ${TARGETS[*]}"
     echo "Domains:        ${ALL_SITE_CODES[*]}"
 
-    local MANIFEST KERNEL_LINES
-    KERNEL_LINES="$(find "$GLUON_DIR/openwrt/bin/targets" -name '*.manifest' -exec \
-                    grep -hE '^(kmod-mac80211|kmod-mt7915e|kmod-ath10k|kmod-ath9k) ' {} + 2>/dev/null | sort -u || true)"
+    # Nur die Manifeste der Targets dieses Laufs. Unter bin/targets liegen
+    # auch die von Targets, die frueher gebaut wurden und diesmal nicht - make
+    # clean raeumt nur die gebauten. Ohne diese Auswahl standen 5.15.198 und
+    # 5.15.211 nebeneinander (Testlauf 26092701bro). Der Gluon-Target-Name ist
+    # <board>-<subtarget>, das Manifest liegt unter bin/targets/<board>/<subtarget>.
+    local T KERNEL_LINES
+    local -a MANIFEST_DIRS=()
+    for T in "${TARGETS[@]}"; do
+      if [ -d "$GLUON_DIR/openwrt/bin/targets/${T%%-*}/${T#*-}" ]; then
+        MANIFEST_DIRS+=( "$GLUON_DIR/openwrt/bin/targets/${T%%-*}/${T#*-}" )
+      fi
+    done
+    KERNEL_LINES=""
+    if (( ${#MANIFEST_DIRS[@]} > 0 )); then
+      KERNEL_LINES="$(find "${MANIFEST_DIRS[@]}" -maxdepth 1 -name '*.manifest' -exec \
+                      grep -hE '^(kmod-mac80211|kmod-mt7915e|kmod-ath10k|kmod-ath9k) ' {} + 2>/dev/null | sort -u || true)"
+    fi
     if [ -n "$KERNEL_LINES" ]; then
       echo
       echo "Kernel und WLAN-Treiber laut OpenWrt-Manifest:"
