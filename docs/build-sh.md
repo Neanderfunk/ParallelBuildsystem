@@ -588,7 +588,8 @@ Nur Python-Standardbibliothek (ab 3.12, also Ubuntu 24.04), keine
 Zusatzpakete.
 
 ```
-scripts/build-top                      # auf dem Buildhost, im Buildverzeichnis
+scripts/build-top                      # auf dem Buildhost: aktuelles Verzeichnis oder letzter Lauf
+scripts/build-top --dir /home/build/firmware2025.1.x
 scripts/build-top --url https://imageslive.ffdus.de/images2023.2ad
 scripts/build-top --once --size 160x50 # ein Bild auf stdout
 ```

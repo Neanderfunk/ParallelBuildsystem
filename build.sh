@@ -3531,6 +3531,12 @@ if [ "$DETACH" = true ] && [ -z "$WORKER_TARGET" ]; then
   detach_build ${ARGS_OHNE_DETACH[@]+"${ARGS_OHNE_DETACH[@]}"}
 fi
 
+# Wo der letzte Lauf gestartet wurde, fuer scripts/build-top ohne --dir. Nur
+# ein Hinweis: scheitert das Schreiben, laeuft der Bau trotzdem.
+if [ -z "$WORKER_TARGET" ]; then
+  printf '%s\n' "$SANDBOX_DIR" > "$BUILDSYS_DIR/.last-config-dir" 2>/dev/null || true
+fi
+
 # Der Bau fragt nie etwas: Wollte ein Werkzeug doch von der Tastatur lesen
 # (etwa esign ohne Schluessel), scheitert es sofort, statt den Lauf
 # stundenlang auf eine Eingabe warten zu lassen. Die Worker erben das.

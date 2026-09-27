@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """build-top - Live-Ansicht eines build.sh-Laufs, im Stil von btop.
 
-  scripts/build-top                lokal, im Buildverzeichnis (Standard:
-                                   das Verzeichnis ueber scripts/)
+  scripts/build-top                lokal: das aktuelle Verzeichnis, wenn es
+                                   eine Konfiguration ist, sonst die des
+                                   zuletzt gestarteten build.sh
+  scripts/build-top --dir DIR      lokal, Konfigurationsverzeichnis DIR
   scripts/build-top --url URL      aus der Ferne ueber imageslive, z. B.
                                    https://imageslive.ffdus.de/images2023.2ad
   scripts/build-top --once         ein Bild auf stdout, ohne Vollbild
@@ -1117,16 +1119,36 @@ class Terminal:
         return None
 
 
+def default_dir():
+    """Konfigurationsverzeichnis des Laufs: das aktuelle, wenn es eins ist,
+    sonst das, aus dem build.sh zuletzt gestartet wurde (.last-config-dir)."""
+    cwd = os.getcwd()
+    if os.path.isdir(os.path.join(cwd, "templates")) or os.path.isdir(os.path.join(cwd, "images", "running")):
+        return cwd
+    buildsys = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with open(os.path.join(buildsys, ".last-config-dir"), encoding="utf-8") as f:
+            last = f.readline().strip()
+        if last and os.path.isdir(last):
+            return last
+    except OSError:
+        pass
+    return buildsys
+
+
 def main():
     ap = argparse.ArgumentParser(description="Live-Ansicht eines build.sh-Laufs")
-    ap.add_argument("--dir", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    help="Buildverzeichnis (Standard: das Verzeichnis ueber scripts/)")
+    ap.add_argument("--dir", default=None,
+                    help="Konfigurationsverzeichnis des Laufs (Standard: das aktuelle, "
+                         "wenn es eins ist, sonst das des zuletzt gestarteten build.sh)")
     ap.add_argument("--url", help="aus der Ferne: images-URL, z. B. https://imageslive.ffdus.de/images2023.2ad")
     ap.add_argument("-i", "--interval", type=float, default=None, help="Sekunden je Bild (lokal 2, Ferne 5)")
     ap.add_argument("--once", action="store_true", help="ein Bild auf stdout und Ende")
     ap.add_argument("--size", help="BxH fuer --once, z. B. 160x50")
     ap.add_argument("--no-color", action="store_true", help="ohne Farben (nur mit --once)")
     a = ap.parse_args()
+    if a.dir is None:
+        a.dir = default_dir()
 
     src = HttpSource(a.url) if a.url else LocalSource(a.dir)
     interval = a.interval or (5.0 if a.url else 2.0)
