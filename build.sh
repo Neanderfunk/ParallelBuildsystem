@@ -364,7 +364,7 @@ write_build_info ()
     KERNEL_LINES=""
     if (( ${#MANIFEST_DIRS[@]} > 0 )); then
       KERNEL_LINES="$(find "${MANIFEST_DIRS[@]}" -maxdepth 1 -name '*.manifest' -exec \
-                      grep -hE '^(kmod-mac80211|kmod-mt7915e|kmod-ath10k|kmod-ath9k) ' {} + 2>/dev/null | sort -u || true)"
+                      grep -hE '^(kernel|kmod-mac80211|kmod-mt7915e|kmod-ath10k|kmod-ath9k) ' {} + 2>/dev/null | sort -u || true)"
     fi
     if [ -n "$KERNEL_LINES" ]; then
       echo
