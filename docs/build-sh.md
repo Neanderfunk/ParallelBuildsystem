@@ -451,6 +451,12 @@ build-times.csv                     Zeiten aller Läufe
   Aufbau gilt also nie als gültig.
 - Serieller Lauf mit `MAKECLEAN` oder `GITRESET` verwirft den Fingerabdruck
   ebenfalls (der Baum ist danach ein anderer).
+- Der Aufbau läuft mit voller Parallelität. Ist die Toolchain eines Targets
+  noch nicht gebaut, kann er an einer Race Condition von OpenWrt scheitern
+  (27.09.2026, x86-64: Paket `perl` fand das Host-perl in `staging_dir/hostpkg`
+  halb geschrieben vor). Abhilfe `--resume`; scheitert es erneut an derselben
+  Stelle, untersuchen. Bewusster Tradeoff gegen einen seriellen ersten Bau,
+  siehe README.
 
 ### 7.4 Isolation eines Workers (rootless)
 

@@ -63,6 +63,24 @@ Ausgangspunkt.
   seriell und sagt das laut.
 - `build.sh` prüft das alles vorab und nennt fehlende Teile auf einmal.
 
+## Bekannte Grenze: erster Bau eines Targets
+
+Der erste Bau eines Targets (golden tree, Toolchain und Host-Werkzeuge noch
+nicht gebaut) läuft mit voller Parallelität (`make -j`). OpenWrt ist dabei
+nicht frei von Race Conditions: Ab und zu scheitert ein Paket, weil ein
+anderer Job dieselbe Datei in `staging_dir/` gerade schreibt. Beobachtet am
+27.09.2026 unter Gluon 2025.1 bei x86-64: das Paket `perl` (kommt über
+Gluons `ALL_NONSHARED`) fand `ExtUtils/Liblist/Kid.pm` des Host-perl halb
+geschrieben vor.
+
+Abhilfe: den Lauf mit `--resume` fortsetzen, der zweite Versuch findet die
+fertigen Dateien vor. Scheitert dasselbe Paket an derselben Stelle erneut,
+ist es kein Zufall mehr und gehört untersucht.
+
+Das ist ein bewusster Tradeoff: Ein erster Bau mit `-j1` wäre stabiler, aber
+um ein Vielfaches langsamer. Spätere Bauschritte auf dem fertigen golden tree
+betrifft das kaum, dort ist die Toolchain schon da.
+
 ## Herkunft und Lizenz
 
 Herausgelöst aus Neanderfunk/FirmwareConfigs (bis September 2026
