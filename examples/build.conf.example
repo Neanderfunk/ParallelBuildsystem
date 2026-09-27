@@ -3,7 +3,7 @@
 #
 # Diese Datei sagt, *wie* gebaut wird. Was gebaut wird, steht daneben:
 #
-#   ./build.sh build.conf targets.conf domains.conf
+#   ../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf
 #
 #   build.conf    diese Datei - Version, Aufraeumen, Parallelitaet,
 #                 Baureihenfolge, Gluon-Optionen

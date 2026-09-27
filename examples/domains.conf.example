@@ -2,7 +2,7 @@
 # domains.conf - welche Domains gebaut werden
 #
 # Wird von build.sh als dritter Parameter eingelesen:
-#   ./build.sh build.conf targets.conf domains.conf
+#   ../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf
 #
 # Diese Datei enthaelt nur die Auswahl. Die Domaindaten selbst - 33 Felder je
 # Zeile - stehen unveraendert in der sites-Datei.

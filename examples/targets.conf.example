@@ -2,7 +2,7 @@
 # targets.conf - welche Hardware gebaut wird
 #
 # Wird von build.sh als zweiter Parameter eingelesen:
-#   ./build.sh build.conf targets.conf domains.conf
+#   ../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf
 #
 # Die Reihenfolge dieser Liste ist zugleich die Baureihenfolge.
 #
