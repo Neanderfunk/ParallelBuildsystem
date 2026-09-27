@@ -23,7 +23,7 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 ## 2. Aufruf und Optionen
 
 ```
-./build.sh <build.conf> <targets.conf> <domains.conf> [target …] [--resume | --restart]
+./build.sh <build.conf> <targets.conf> <domains.conf> [target …] [--resume | --restart] [--detach]
 ```
 
 | Teil | Bedeutung |
@@ -34,18 +34,31 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 | `[target …]` | überschreibt `GLUON_TARGETS`, für einzelne Testbauten |
 | `--resume` | abgebrochenen Lauf fortsetzen: nur Fehlendes bauen, Release-String und Ausgabeverzeichnis bleiben |
 | `--restart` | übrig gebliebenen Lauf verwerfen (`images/running` löschen) und neu anfangen |
+| `--detach` | abgekoppelt in einer tmux-Sitzung laufen und gleich verbinden, siehe unten |
 | *(keins von beiden)* | liegt noch ein `images/running` herum → Abbruch mit Hinweis |
 | `--worker=<target>` | intern, startet sich build.sh im Parallelbetrieb selbst; nicht von Hand |
 
 - `--resume` und `--restart` zusammen → Abbruch.
 - Optionen dürfen vor oder hinter den drei Dateien stehen.
 - Muss aus dem **eigenen Verzeichnis** gestartet werden (sonst Abbruch).
-- Auf wir-horst üblich mit dem Wrapper, der mit `nice 15` startet und nach
-  `long-server-task.log` loggt:
+- Ein Lauf dauert Stunden und darf nicht an der SSH-Sitzung hängen. Deshalb
+  mit `--detach` starten: build.sh startet sich in einer tmux-Sitzung
+  `build-<verzeichnis>` neu (ohne tmux in screen, ohne beides per `setsid`
+  mit Ausgabe in `detached.log`) und verbindet sofort. Lösen mit Strg-b d,
+  wieder verbinden mit `tmux attach -t build-<verzeichnis>`. Nach dem Ende
+  bleibt die Sitzung offen und zeigt den Exit-Code. Läuft build.sh schon in
+  tmux oder screen, baut es direkt. Gibt es die Sitzung schon, bricht es ab.
 
   ```
-  ./long-server-task.sh ./build.sh build.conf targets.conf domains.conf &
+  ./build.sh --detach build.conf targets.conf domains.conf
   ```
+
+  Ein `&` am Ende hilft nicht: Der Prozess bleibt Kind der Shell und stirbt
+  mit ihr (SIGHUP). So endeten die ersten beiden Anläufe von 26091920sta.
+  Das frühere `long-server-task.sh` schützte davor ebenfalls nicht und ist
+  entfallen.
+- build.sh liest nie von der Tastatur (stdin ist `/dev/null`): Ein Werkzeug,
+  das doch etwas fragen will, scheitert sofort, statt den Lauf anzuhalten.
 
 Beispiele:
 
@@ -357,10 +370,10 @@ build-times.csv                     Zeiten aller Läufe
 | `site/build.log.gz` | komplettes Log der Domain, ein gzip-Member, `zless`/`zgrep` |
 | `site/build-<t>.log.gz` | nur während des Laufs: fertige Targets vor dem Abschluss |
 | `site/prepare.log` | Patch- und Update-Protokoll |
-| `site/build-info.txt` | Release, Domain, Bauzeit der Domain, Lauf von–bis, Host, Aufruf, Commits von Firmware-Repo, Gluon und Modulen (Soll vs. Ist) |
+| `site/build-info.txt` | Release, Domain, Bauzeit der Domain, Lauf von–bis, Host, Aufruf, Commits von Firmware-Repo, Gluon, Modulen und Patch-Repos (Soll vs. Ist), Kernel- und WLAN-Treiberversionen der gebauten Targets |
 | `build-times.csv` | `run_id,timestamp,epoch,build_order,phase,template,site_code,target,seconds,note`; Phasen `run_start`, `prepare`, `build`, `finalize`, `run_end` |
 | `.overlays/<target>.log` | Ausgabe eines Workers |
-| `long-server-task.log` | Hauptlog beim Start über den Wrapper |
+| `detached.log` | Konsolenausgabe, nur bei `--detach` ohne tmux und screen |
 | `buildinfo/<lauf>.summary.txt` | der Kasten vom Laufende (Dauer, Umfang, Erlang, Images, Größen) |
 | `buildinfo/<lauf>.empfehlung.txt` | Empfehlung und Kennzahlen des Collectors (7.6) |
 | `buildinfo/<lauf>.metrics.csv(.gz)` | 1-s-Proben: CPU, iowait, Platte, steal, Phasen; während des Laufs live als `.csv` |

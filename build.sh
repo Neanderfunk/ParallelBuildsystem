@@ -3262,19 +3262,86 @@ prepare_run_state ()
 }
 
 
+# --detach: den Lauf abgekoppelt von der eigenen Terminalsitzung starten und
+# gleich wieder verbinden. Ersetzt long-server-task.sh, das zwar protokollierte,
+# aber nicht gegen SIGHUP schuetzte: Zwei Anlaeufe des Release-Laufs
+# 26091920sta starben so mit der SSH-Sitzung (19. und 20.09.2026).
+#
+# Bevorzugt tmux, sonst screen, sonst setsid + nohup mit Log-Datei. Die
+# Sitzung heisst nach dem Verzeichnis, damit zwei Baeume auf einem Host sich
+# nicht in die Quere kommen; nach dem Ende des Laufs bleibt sie offen, damit
+# Zusammenfassung oder Fehlermeldung lesbar bleiben. Laeuft build.sh schon in
+# tmux oder screen, schuetzt die Sitzung bereits: dann baut es direkt weiter.
+detach_build ()
+{
+  if [ -n "${TMUX-}" ] || [ -n "${STY-}" ]; then
+    echo "--detach: build.sh laeuft schon in einer tmux- oder screen-Sitzung, der Bau startet direkt hier."
+    return 0
+  fi
+
+  local SESSION CMD INNER
+  SESSION="build-$(printf '%s' "$(basename -- "$SANDBOX_DIR")" | tr -c 'A-Za-z0-9_-' '_')"
+  printf -v CMD '%q ' "$BUILD_SH" "$@"
+  CMD="${CMD% }"
+  INNER="$CMD; RC=\$?; echo; echo \"build.sh beendet, Exit-Code \$RC. Die Sitzung bleibt offen, schliessen mit exit.\"; exec \"\${SHELL:-/bin/bash}\""
+
+  local INTERAKTIV=false
+  if [ -t 0 ] && [ -t 1 ]; then INTERAKTIV=true; fi
+
+  if command -v tmux >/dev/null 2>&1; then
+    if tmux has-session -t "=$SESSION" 2>/dev/null; then
+      abort "Es gibt schon eine tmux-Sitzung \"$SESSION\" - laeuft dort noch ein Bau? Nachsehen: tmux attach -t $SESSION"
+    fi
+    tmux new-session -d -s "$SESSION" -c "$SANDBOX_DIR" "$INNER" \
+      || abort "tmux konnte die Sitzung \"$SESSION\" nicht anlegen."
+    echo "Bau laeuft in der tmux-Sitzung \"$SESSION\". Loesen mit Strg-b d, wieder verbinden mit: tmux attach -t $SESSION"
+    if [ "$INTERAKTIV" = true ]; then exec tmux attach -t "=$SESSION"; fi
+    exit 0
+  fi
+
+  if command -v screen >/dev/null 2>&1; then
+    if screen -list 2>/dev/null | grep -q "[.]$SESSION[[:space:]]"; then
+      abort "Es gibt schon eine screen-Sitzung \"$SESSION\" - laeuft dort noch ein Bau? Nachsehen: screen -r $SESSION"
+    fi
+    ( cd "$SANDBOX_DIR" && screen -dmS "$SESSION" bash -c "$INNER" ) \
+      || abort "screen konnte die Sitzung \"$SESSION\" nicht anlegen."
+    echo "Bau laeuft in der screen-Sitzung \"$SESSION\". Loesen mit Strg-a d, wieder verbinden mit: screen -r $SESSION"
+    if [ "$INTERAKTIV" = true ]; then exec screen -r "$SESSION"; fi
+    exit 0
+  fi
+
+  local LOG="$SANDBOX_DIR/detached.log" PID
+  ( cd "$SANDBOX_DIR" && exec setsid nohup "$BUILD_SH" "$@" >"$LOG" 2>&1 </dev/null ) &
+  PID=$!
+  echo "Weder tmux noch screen gefunden: Bau laeuft abgekoppelt (setsid), PID $PID, Ausgabe in $LOG."
+  if [ "$INTERAKTIV" = true ]; then
+    echo "Anzeige des Logs; Strg-C beendet nur die Anzeige, nicht den Bau."
+    sleep 1
+    exec tail -n +1 --pid="$PID" -f "$LOG"
+  fi
+  exit 0
+}
+
+
 # ----------- Entry point -----------
 
 # Optionen von den Stellungsargumenten trennen, damit --resume vor wie hinter
 # den drei Konfigurationsdateien stehen darf.
 RESUME=false
 RESTART=false
+DETACH=false
 # Intern: build.sh startet sich im Parallelbetrieb selbst als Worker fuer ein
 # Target, siehe start_worker. Nicht fuer den Aufruf von Hand gedacht.
 WORKER_TARGET=""
 
 declare -a POSITIONAL_ARGS=()
+# Alle Argumente ausser --detach, fuer den Neustart in der abgekoppelten
+# Sitzung (detach_build).
+declare -a ARGS_OHNE_DETACH=()
 for ARG in "$@"; do
+  [ "$ARG" = "--detach" ] || ARGS_OHNE_DETACH+=( "$ARG" )
   case "$ARG" in
+    --detach)   DETACH=true ;;
     --resume)   RESUME=true ;;
     --restart)  RESTART=true ;;
     --worker=*) WORKER_TARGET="${ARG#--worker=}" ;;
@@ -3305,7 +3372,13 @@ if (( $# < 3 )); then
   echo "                directory are formed anew. What the old run had already"
   echo "                built is reported before it is deleted."
   echo
-  echo "Example: ./build.sh build.conf targets.conf domains.conf"
+  echo "  --detach      Runs the build detached from this terminal session, in"
+  echo "                a tmux session named after the directory (else screen,"
+  echo "                else setsid with detached.log), and attaches to it right"
+  echo "                away. Detach with Ctrl-b d; the session stays open after"
+  echo "                the build ends. Inside tmux or screen it builds directly."
+  echo
+  echo "Example: ./build.sh --detach build.conf targets.conf domains.conf"
   exit 0
 fi
 
@@ -3370,6 +3443,15 @@ BUILD_COMMAND_LINE="${BUILD_COMMAND_LINE% }"
 if [ "$PWD" != "$SANDBOX_DIR" ]; then
   abort "build.sh has to be started from its own directory ($SANDBOX_DIR), the current one is $PWD."
 fi
+
+if [ "$DETACH" = true ] && [ -z "$WORKER_TARGET" ]; then
+  detach_build ${ARGS_OHNE_DETACH[@]+"${ARGS_OHNE_DETACH[@]}"}
+fi
+
+# Der Bau fragt nie etwas: Wollte ein Werkzeug doch von der Tastatur lesen
+# (etwa esign ohne Schluessel), scheitert es sofort, statt den Lauf
+# stundenlang auf eine Eingabe warten zu lassen. Die Worker erben das.
+exec </dev/null
 
 # The three paths are made absolute right away: the build runs with the Gluon
 # directory as its working directory, so a relative path would stop resolving
