@@ -23,7 +23,7 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 ## 2. Aufruf und Optionen
 
 ```
-./build.sh <build.conf> <targets.conf> <domains.conf> [target …] [--resume | --restart] [--detach]
+<buildsystem>/build.sh <build.conf> <targets.conf> <domains.conf> [target …] [--resume | --restart] [--detach]
 ```
 
 | Teil | Bedeutung |
@@ -40,7 +40,12 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 
 - `--resume` und `--restart` zusammen → Abbruch.
 - Optionen dürfen vor oder hinter den drei Dateien stehen.
-- Muss aus dem **eigenen Verzeichnis** gestartet werden (sonst Abbruch).
+- Läuft im **Konfigurationsverzeichnis** einer Community (dem mit `templates/`
+  und `patches/`, etwa ein Klon von Neanderfunk/FirmwareConfigs), aufgerufen
+  mit dem Pfad zu diesem Repo, z. B. `../ParallelBuildsystem/build.sh`. Dort
+  entstehen `gluon/`, `images/`, `assembled/` und die Metriken; aus diesem
+  Repo kommen nur `build.sh`, `esign`, `scripts/` und `tests/`. Fehlen
+  `templates/` oder `patches/` im aktuellen Verzeichnis → Abbruch.
 - Ein Lauf dauert Stunden und darf nicht an der SSH-Sitzung hängen. Deshalb
   mit `--detach` starten: build.sh startet sich in einer tmux-Sitzung
   `build-<verzeichnis>` neu (ohne tmux in screen, ohne beides per `setsid`
@@ -50,7 +55,7 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
   tmux oder screen, baut es direkt. Gibt es die Sitzung schon, bricht es ab.
 
   ```
-  ./build.sh --detach build.conf targets.conf domains.conf
+  ../ParallelBuildsystem/build.sh --detach build.conf targets.conf domains.conf
   ```
 
   Ein `&` am Ende hilft nicht: Der Prozess bleibt Kind der Shell und stirbt
@@ -64,11 +69,11 @@ Beispiele:
 
 | Zweck | Aufruf |
 |---|---|
-| Volllauf stable | `./build.sh build.conf targets.conf domains.conf` |
-| Broken-Testlauf | `./build.sh build.conf targets.conf domains-broken.conf` |
-| nur ein Target | `./build.sh build.conf targets.conf domains.conf ramips-mt7621` |
-| nach Abbruch weiter | `./build.sh build.conf targets.conf domains.conf --resume` |
-| alten Rest wegwerfen | `./build.sh build.conf targets.conf domains.conf --restart` |
+| Volllauf stable | `../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf` |
+| Broken-Testlauf | `../ParallelBuildsystem/build.sh build.conf targets.conf domains-broken.conf` |
+| nur ein Target | `../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf ramips-mt7621` |
+| nach Abbruch weiter | `../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf --resume` |
+| alten Rest wegwerfen | `../ParallelBuildsystem/build.sh build.conf targets.conf domains.conf --restart` |
 
 ---
 
