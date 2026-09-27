@@ -3,8 +3,9 @@
 **A measurement report on where the time goes, and on a rootless overlayfs
 worker pool that parallelises the build**
 
-Freifunk im Neanderland (Neanderfunk) firmware, branch `v2023.2.x`,
-September 2026.
+Freifunk im Neanderland (Neanderfunk), Gluon v2023.2.x, September 2026.
+Measured while the build system was still part of the firmware repository;
+it has since moved into this repository of its own.
 
 > **About this report.** The measurements come from `build.sh` in this
 > repository and its load collector, on runs that the maintainer (adorfer)
@@ -654,6 +655,8 @@ and targets, and some bugs would likely have gone unnoticed.
   ```bash
   python3 docs/parallel-builds/analyse.py docs/parallel-builds/data/*/
   ```
-- The build system is currently bundled with Neanderfunk's site templates
-  and Gluon patches. Its interface to them is narrow: two directories,
-  `templates/` and `patches/`, and a `prepare.sh` inside the template.
+- The build system is separate from the community's configuration. It is
+  called from a configuration directory that holds `build.conf`,
+  `targets.conf`, `domains.conf`, the site templates with their
+  `prepare.sh`, and the patches; see the [README](../../README.md) of this
+  repository.
