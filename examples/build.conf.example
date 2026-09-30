@@ -243,3 +243,8 @@ DISK_FULL_MB=1024
 #
 DATE_SUFFIX_FORMAT="+%s"
 SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
+
+# Overlay-Pruefung nach jedem Bauschritt (docs/build-sh.md 7.9b): Warnung,
+# wenn das beschreibbare jffs2-Overlay eines NOR-Geraets unter diesem Wert
+# liegt, in KB. 0 schaltet die Pruefung ab.
+OVERLAY_WARN_KB=448

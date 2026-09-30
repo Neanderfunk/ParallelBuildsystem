@@ -122,6 +122,7 @@ Später Geladenes gewinnt.
 | `DISK_FULL_MB` | `1024` | darunter nennt ein Abbruch die volle Platte als Ursache |
 | `DOWNLOAD_ATTEMPTS` | `5` | Versuche bei Netzfehler (jeder Netzschritt), `0` = kein Vorab-Download |
 | `DOWNLOAD_RETRY_DELAY` | `30` | Sekunden zwischen diesen Versuchen |
+| `OVERLAY_WARN_KB` | `448` | Overlay-Prüfung nach jedem Bauschritt: Warnung, wenn das jffs2-Overlay eines NOR-Geräts darunter liegt (KB); `0` = aus |
 | `NET_WAIT_INTERVAL` | `600` | Schlafmodus: alle so viele Sekunden prüfen, ob das Netz wieder da ist |
 | `NET_WAIT_MAX` | `7200` | Schlafmodus: danach Aufgabe; `0` = kein Schlafmodus |
 | `NET_CHECK_HOST` | `github.com` | Netzprüfung: Namensauflösung + TCP 443 |
@@ -585,6 +586,30 @@ build.sh (Hauptprozess, eigene UID)
 - Die Einrichtung einmal als root, der Build-User selbst braucht keine Rechte.
 - wir-horst: overlay-Modul war anfangs nicht geladen, jetzt über
   `modules-load.d` dauerhaft.
+
+### 7.9b Overlay-Prüfung (knapper Flash)
+
+Nach jedem Bauschritt rechnet `check_overlay_headroom` für jedes NOR-Gerät
+des Targets aus, wie groß das beschreibbare jffs2-Overlay wird:
+Größengrenze aus `bin/targets/<target>/<sub>/profiles.json`
+(`file_size_limits.image`, Gluon-Patch „build: include size-limits to
+device-metadata“) minus Lage der jffs2-Startmarke `0xdeadc0de` im
+OpenWrt-Sysupgrade-Image, aufgerundet auf 64 KB. NAND-Geräte (UBI, tar) und
+Geräte ohne Grenze fallen heraus.
+
+- Ausgabe im Log und unter `images/running/buildinfo/overlay-<template>-<site>-<target>.txt`,
+  sortiert, mit `WARNUNG` unter `OVERLAY_WARN_KB`.
+- Nur Warnung, der Bau läuft weiter.
+- Warum 448 KB: jffs2 hält für Schreibzugriffe eine Reserve (Kernel 6.6:
+  2 Blöcke plus 2 % der Größe, bei 64-KB-Blöcken und kleinem Overlay
+  3 Blöcke = 192 KB), `df` zählt sie als belegt; Gluon belegt nach dem
+  Einrichten rund 96 KB; dazu Platz, damit jffs2 beim Schreiben aufräumen
+  kann. Bestätigt werden soll die Grenze mit Test E der Abnahme.
+- Die Grenze ist OpenWrts `IMAGE_SIZE`; wo die kleiner ist als die
+  Partition (z. B. UniFi AP), liegt der Wert etwas zu niedrig, also auf der
+  sicheren Seite.
+- Anlass: Gluon 2025.1, Archer C6 v2 256 KB, UniFi AP 192 KB Overlay
+  (30.09.2026).
 
 ### 7.10 Build-Monitor
 

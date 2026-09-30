@@ -630,6 +630,11 @@ set_config_defaults ()
 
   DATE_SUFFIX_FORMAT="+%s"
   SITE_COPY_EXCLUDES=( '*.old' '*.backup' '*~' '*.nonworking' )
+
+  # Overlay-Pruefung nach jedem Bauschritt, siehe check_overlay_headroom:
+  # Warnung, wenn das beschreibbare jffs2-Overlay eines NOR-Geraets unter
+  # diesem Wert liegt (KB). 0 schaltet die Pruefung ab.
+  OVERLAY_WARN_KB=448
 }
 
 # Fingerabdruck des golden tree: alles, was bestimmt, WAS im Baum kompiliert
@@ -1961,6 +1966,87 @@ build_site_target ()
   eval "$MAKE_CMD"
 
   collect_opkg_feeds "$TARGET"
+  check_overlay_headroom "$TARGET" "$TEMPLATE_NAME" "$SITE_CODE"
+}
+
+# Wie viel beschreibbarer Flash (jffs2-Overlay) bleibt auf den NOR-Geraeten?
+#
+# Auf Geraeten mit squashfs + jffs2 ist das Overlay der Rest der
+# Firmware-Partition hinter Kernel und squashfs. Davon haelt jffs2 fuer
+# Schreibzugriffe eine Reserve (Kernel 6.6 jffs2_calc_trigger_levels: 2 Bloecke
+# plus 2 % der Groesse, bei 64-KB-Bloecken und kleinem Overlay 3 Bloecke =
+# 192 KB), df zaehlt sie als belegt. Gluon belegt nach dem Einrichten rund
+# 96 KB. Ist das Overlay zu klein, scheitert schon das erste "uci commit".
+# Bemerkt wurde das beim Umstieg auf Gluon 2025.1: Archer C6 v2 256 KB,
+# UniFi AP 192 KB (30.09.2026).
+#
+# Grundlage sind OpenWrts Bauergebnisse in bin/targets/<target>/<sub>/:
+#   profiles.json      je Geraet images[] (Name, Typ) und, mit Gluons Patch
+#                      "build: include size-limits to device-metadata",
+#                      file_size_limits.image = Groesse der Firmware-Partition
+#   *-sysupgrade.bin   darin die jffs2-Startmarke 0xdeadc0de; ab dem naechsten
+#                      Loeschblock (64 KB) beginnt das Overlay
+# Overlay = Grenze - Marke (aufgerundet). NAND-Geraete (UBI, tar-Images) haben
+# keine Marke und bleiben aussen vor, ebenso Geraete ohne Groessengrenze.
+#
+# Nur Warnung, der Bau laeuft weiter. Die Tabelle landet im Log und unter
+# images/running/buildinfo/overlay-<template>-<site>-<target>.txt.
+check_overlay_headroom ()
+{
+  local TARGET="$1" TEMPLATE_NAME="$2" SITE_CODE="$3"
+  (( OVERLAY_WARN_KB > 0 )) || return 0
+
+  local BINDIR="$SANDBOX_DIR/gluon/openwrt/bin/targets/${TARGET/-//}"
+  local OUT="$SANDBOX_DIR/images/running/buildinfo/overlay-$TEMPLATE_NAME-$SITE_CODE-$TARGET.txt"
+
+  if [ ! -f "$BINDIR/profiles.json" ]; then
+    echo "  Overlay-Pruefung: $BINDIR/profiles.json fehlt - uebersprungen."
+    return 0
+  fi
+  mkdir -p "$(dirname "$OUT")"
+
+  python3 - "$BINDIR" "$OVERLAY_WARN_KB" > "$OUT" <<'PYEOF' || { echo "  Overlay-Pruefung: fehlgeschlagen, uebersprungen."; return 0; }
+import json, os, sys
+bindir, warn_kb = sys.argv[1], int(sys.argv[2])
+ERASE = 0x10000
+MARK = b'\xde\xad\xc0\xde'
+prof = json.load(open(os.path.join(bindir, 'profiles.json'))).get('profiles', {})
+rows = []
+for pid, p in prof.items():
+    lim = (p.get('file_size_limits') or {}).get('image')
+    if not lim:
+        continue
+    for img in p.get('images', []):
+        if img.get('type') != 'sysupgrade' or img.get('filesystem') != 'squashfs':
+            continue
+        path = os.path.join(bindir, img.get('name', ''))
+        if not os.path.isfile(path):
+            continue
+        data = open(path, 'rb').read()
+        pos = -1
+        off = 0
+        while True:
+            off = data.find(MARK, off)
+            if off < 0:
+                break
+            if off % 0x1000 == 0:
+                pos = off
+                break
+            off += 1
+        if pos < 0:
+            continue
+        start = -(-pos // ERASE) * ERASE
+        rows.append(((lim - start) // 1024, pid))
+rows.sort()
+for kb, pid in rows:
+    flag = 'WARNUNG' if kb < warn_kb else 'ok'
+    print(f'{flag:8s} {kb:6d} KB Overlay  {pid}')
+PYEOF
+
+  local N_WARN
+  N_WARN="$(grep -c '^WARNUNG' "$OUT" || true)"
+  echo "  Overlay-Pruefung $TARGET: $(grep -c . "$OUT" || true) NOR-Geraete, $N_WARN unter $OVERLAY_WARN_KB KB (Grenze OVERLAY_WARN_KB)."
+  grep '^WARNUNG' "$OUT" | sed 's/^/  /' || true
 }
 
 # Sammelt die opkg-Feeds aus bin/packages/<arch>/ ein.
