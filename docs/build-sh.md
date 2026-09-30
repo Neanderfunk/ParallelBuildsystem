@@ -593,9 +593,12 @@ Nach jedem Bauschritt rechnet `check_overlay_headroom` für jedes NOR-Gerät
 des Targets aus, wie groß das beschreibbare jffs2-Overlay wird:
 Größengrenze aus `bin/targets/<target>/<sub>/profiles.json`
 (`file_size_limits.image`, Gluon-Patch „build: include size-limits to
-device-metadata“) minus Lage der jffs2-Startmarke `0xdeadc0de` im
-OpenWrt-Sysupgrade-Image, aufgerundet auf 64 KB. NAND-Geräte (UBI, tar) und
-Geräte ohne Grenze fallen heraus.
+device-metadata“) minus Lage der jffs2-Startmarke `0xdeadc0de` in Gluons
+fertigem Sysupgrade-Image (`images/running/<tmpl>/<site>/sysupgrade/`),
+aufgerundet auf 64 KB. Zugeordnet wird über den Boardnamen
+(`supported_devices` im Metadaten-Anhang des Images und in `profiles.json`);
+die OpenWrt-Images selbst löscht Gluons `copy_output.lua` nach dem Kopieren.
+NAND-Geräte (UBI, tar), Alias-Links und Geräte ohne Grenze fallen heraus.
 
 - Ausgabe im Log und unter `images/running/buildinfo/overlay-<template>-<site>-<target>.txt`,
   sortiert, mit `WARNUNG` unter `OVERLAY_WARN_KB`.

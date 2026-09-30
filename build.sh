@@ -1980,14 +1980,18 @@ build_site_target ()
 # Bemerkt wurde das beim Umstieg auf Gluon 2025.1: Archer C6 v2 256 KB,
 # UniFi AP 192 KB (30.09.2026).
 #
-# Grundlage sind OpenWrts Bauergebnisse in bin/targets/<target>/<sub>/:
-#   profiles.json      je Geraet images[] (Name, Typ) und, mit Gluons Patch
-#                      "build: include size-limits to device-metadata",
-#                      file_size_limits.image = Groesse der Firmware-Partition
-#   *-sysupgrade.bin   darin die jffs2-Startmarke 0xdeadc0de; ab dem naechsten
-#                      Loeschblock (64 KB) beginnt das Overlay
-# Overlay = Grenze - Marke (aufgerundet). NAND-Geraete (UBI, tar-Images) haben
-# keine Marke und bleiben aussen vor, ebenso Geraete ohne Groessengrenze.
+# Grundlage:
+#   OpenWrts bin/targets/<target>/<sub>/profiles.json: je Profil die
+#     Boardnamen (supported_devices) und, mit Gluons Patch "build: include
+#     size-limits to device-metadata", file_size_limits.image = Groesse der
+#     Firmware-Partition
+#   Gluons fertige Sysupgrade-Images in images/running/<tmpl>/<site>/sysupgrade/
+#     (die OpenWrt-Images loescht Gluons copy_output.lua nach dem Kopieren):
+#     Boardnamen im Metadaten-Anhang, jffs2-Startmarke 0xdeadc0de; ab dem
+#     naechsten Loeschblock (64 KB) beginnt das Overlay
+# Zuordnung Image -> Grenze ueber den Boardnamen. Overlay = Grenze - Marke
+# (aufgerundet). NAND-Geraete (UBI, tar-Images) haben keine Marke und bleiben
+# aussen vor, ebenso Geraete ohne Groessengrenze.
 #
 # Nur Warnung, der Bau laeuft weiter. Die Tabelle landet im Log und unter
 # images/running/buildinfo/overlay-<template>-<site>-<target>.txt.
@@ -1996,51 +2000,58 @@ check_overlay_headroom ()
   local TARGET="$1" TEMPLATE_NAME="$2" SITE_CODE="$3"
   (( OVERLAY_WARN_KB > 0 )) || return 0
 
-  local BINDIR="$SANDBOX_DIR/gluon/openwrt/bin/targets/${TARGET/-//}"
+  local PROFILES="$SANDBOX_DIR/gluon/openwrt/bin/targets/${TARGET/-//}/profiles.json"
+  local IMGDIR="$SANDBOX_DIR/images/running/$TEMPLATE_NAME/$SITE_CODE/sysupgrade"
   local OUT="$SANDBOX_DIR/images/running/buildinfo/overlay-$TEMPLATE_NAME-$SITE_CODE-$TARGET.txt"
 
-  if [ ! -f "$BINDIR/profiles.json" ]; then
-    echo "  Overlay-Pruefung: $BINDIR/profiles.json fehlt - uebersprungen."
+  if [ ! -f "$PROFILES" ] || [ ! -d "$IMGDIR" ]; then
+    echo "  Overlay-Pruefung: profiles.json oder sysupgrade/ fehlt - uebersprungen."
     return 0
   fi
   mkdir -p "$(dirname "$OUT")"
 
-  python3 - "$BINDIR" "$OVERLAY_WARN_KB" > "$OUT" <<'PYEOF' || { echo "  Overlay-Pruefung: fehlgeschlagen, uebersprungen."; return 0; }
-import json, os, sys
-bindir, warn_kb = sys.argv[1], int(sys.argv[2])
+  python3 - "$PROFILES" "$IMGDIR" "$OVERLAY_WARN_KB" > "$OUT" <<'PYEOF' || { echo "  Overlay-Pruefung: fehlgeschlagen, uebersprungen."; return 0; }
+import json, os, re, sys
+profiles, imgdir, warn_kb = sys.argv[1], sys.argv[2], int(sys.argv[3])
 ERASE = 0x10000
 MARK = b'\xde\xad\xc0\xde'
-prof = json.load(open(os.path.join(bindir, 'profiles.json'))).get('profiles', {})
-rows = []
-for pid, p in prof.items():
+# Grenze je Boardname aus OpenWrts profiles.json (nur Geraete mit Grenze)
+limit = {}
+for pid, p in json.load(open(profiles)).get('profiles', {}).items():
     lim = (p.get('file_size_limits') or {}).get('image')
+    if lim:
+        for board in p.get('supported_devices', []):
+            limit[board] = lim
+rows = []
+for name in sorted(os.listdir(imgdir)):
+    path = os.path.join(imgdir, name)
+    if not name.endswith('-sysupgrade.bin') or os.path.islink(path):
+        continue
+    data = open(path, 'rb').read()
+    boards = []
+    for m in re.findall(rb'"supported_devices"\s*:\s*\[([^\]]*)\]', data[-16384:]):
+        boards += [b.decode() for b in re.findall(rb'"([^"]+)"', m)]
+    lim = next((limit[b] for b in boards if b in limit), None)
     if not lim:
         continue
-    for img in p.get('images', []):
-        if img.get('type') != 'sysupgrade' or img.get('filesystem') != 'squashfs':
-            continue
-        path = os.path.join(bindir, img.get('name', ''))
-        if not os.path.isfile(path):
-            continue
-        data = open(path, 'rb').read()
-        pos = -1
-        off = 0
-        while True:
-            off = data.find(MARK, off)
-            if off < 0:
-                break
-            if off % 0x1000 == 0:
-                pos = off
-                break
-            off += 1
-        if pos < 0:
-            continue
-        start = -(-pos // ERASE) * ERASE
-        rows.append(((lim - start) // 1024, pid))
+    pos, off = -1, 0
+    while True:
+        off = data.find(MARK, off)
+        if off < 0:
+            break
+        if off % 0x1000 == 0:
+            pos = off
+            break
+        off += 1
+    if pos < 0:
+        continue
+    start = -(-pos // ERASE) * ERASE
+    dev = re.sub(r'^gluon-.*?-\d{8}[a-z]+-|-sysupgrade\.bin$', '', name)
+    rows.append(((lim - start) // 1024, dev))
 rows.sort()
-for kb, pid in rows:
+for kb, dev in rows:
     flag = 'WARNUNG' if kb < warn_kb else 'ok'
-    print(f'{flag:8s} {kb:6d} KB Overlay  {pid}')
+    print(f'{flag:8s} {kb:6d} KB Overlay  {dev}')
 PYEOF
 
   local N_WARN
