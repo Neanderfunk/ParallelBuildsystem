@@ -717,8 +717,12 @@ golden_fingerprint ()
     echo "targets=$(printf '%s\n' "${BUILD_TARGETS[@]}" | sort | tr '\n' ' ')"
     echo "devices=$GLUONDEVICES"
     echo "broken=$BROKEN"
-    echo "cc=$(gcc --version 2>/dev/null | head -n 1)"
-    echo "libc=$(ldd --version 2>/dev/null | head -n 1)"
+    # sed statt head: head schliesst die Pipe nach der ersten Zeile, ldd
+    # bekommt beim Weiterschreiben SIGPIPE, und mit pipefail plus errtrace
+    # meldete der ERR-Trap dann "Abbruch mit Exitcode 141" (harmlos, die Zeile
+    # war vollstaendig). sed liest alles, es gibt kein SIGPIPE.
+    echo "cc=$(gcc --version 2>/dev/null | sed -n 1p)"
+    echo "libc=$(ldd --version 2>/dev/null | sed -n 1p)"
     # Sortiert, damit die Reihenfolge im Dateisystem keine Rolle spielt.
     ( cd "$SANDBOX_DIR" \
         && find patches templates/common -type f "${AUSSCHLUSS[@]}" -print0 \
