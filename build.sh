@@ -3190,6 +3190,11 @@ build_all_images ()
   if [ -d "./images/images-$DATE_SUFFIX/packages" ]; then
     echo "- Packages dir: images-$DATE_SUFFIX/packages"
   fi
+  # opkg-Feeds je Gluon-Zweig und Release, siehe collect_opkg_feeds.
+  local OPKG_DIR
+  for OPKG_DIR in ./images/images-"$DATE_SUFFIX"/opkg-*/gluon-*; do
+    [ -d "$OPKG_DIR" ] && echo "- opkg    dir: ${OPKG_DIR#./images/}"
+  done
 
   write_buildinfo "./images/images-$DATE_SUFFIX"
   # Kasten auch nach buildinfo/; scheitert das Schreiben, bleibt er auf dem Schirm.
