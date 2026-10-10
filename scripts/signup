@@ -20,6 +20,7 @@
 #   SIGNUP_NEU=1 schon Hochgeladenes trotzdem noch einmal packen und senden
 #   SIGNUP_USER  Benutzer auf dem Zielserver (Vorgabe adorfer)
 #   SIGNUP_PORT  SSH-Port (Vorgabe 62954)
+#   SIGNUP_LAUT=1 Ausgabe und Fortschritt von 7z zeigen (sonst unterdrueckt)
 #
 # ---------------------------------------------------------------------------
 # Warum diese Fassung vorsichtiger ist als die alte
@@ -125,7 +126,12 @@ packe_und_lade() {
         return 0
     fi
     archiv="$UPLD/$NAME.$endung"
-    ( cd "$verzeichnis" && /usr/bin/7z -mx=1 -R A "$archiv" * >/dev/null ) \
+    if [ "${SIGNUP_LAUT:-0}" = 1 ]; then
+        siebenz_aus=(-bsp1 -bso1)
+    else
+        siebenz_aus=(-bsp0 -bso0)
+    fi
+    ( cd "$verzeichnis" && /usr/bin/7z -mx=1 -R "${siebenz_aus[@]}" A "$archiv" * ) \
         || { melde "7z fehlgeschlagen fuer $verzeichnis"; return 1; }
     [ -s "$archiv" ] || { melde "Archiv leer oder fehlt: $archiv"; return 1; }
     scp -P "$PORT" "$archiv" "$USER@$HOST:." \
