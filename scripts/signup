@@ -1,0 +1,152 @@
+#!/bin/bash
+#
+# signup - ein gebautes Domaenenverzeichnis unterschreiben, packen und auf den
+# Firmwareserver laden.
+#
+#   signup <host> <baum> <release> <site> <subsite> [packages]
+#
+#   host      Zielserver, z. B. firmware6.ffnef.de
+#   baum      Bauverzeichnis unter /home/build, z. B. firmware2025.1.x
+#   release   Branch des Manifests: stable, broken, sackgasse
+#   site      Verzeichnis im Bau, z. B. 02_met oder 02_met-key
+#   subsite   Verzeichnis darunter, immer die site OHNE "-key"
+#   packages  wenn gesetzt, zusaetzlich packages/ und opkg-*/ hochladen
+#
+# Umgebung:
+#   SIGNUP_TMP   wohin die Archive zwischengelegt werden (Vorgabe /var/tmp/signup)
+#   SIGNUP_VORHANDEN  Dateiliste des Zielservers, eine je Zeile. Ist sie
+#                gesetzt, fragt signup den Server nicht selbst - signup-alle
+#                holt sie einmal fuer alle Aufrufe.
+#   SIGNUP_NEU=1 schon Hochgeladenes trotzdem noch einmal packen und senden
+#   SIGNUP_USER  Benutzer auf dem Zielserver (Vorgabe adorfer)
+#   SIGNUP_PORT  SSH-Port (Vorgabe 62954)
+#
+# ---------------------------------------------------------------------------
+# Warum diese Fassung vorsichtiger ist als die alte
+#
+# Am 10.10.2026 lief der Buildhost voll, 1,2 TB. Ursache war ein Tippfehler im
+# Aufrufer: "signup ... 02_met 02_mt" statt "02_met 02_met". Das Verzeichnis
+# gibt es nicht, also schlug
+#
+#     cd ./$LASTIMAGE/$SITE/$SUBSITE/
+#
+# fehl. Da weder "set -e" noch eine Pruefung dahinterstand, lief das Skript
+# weiter - aber im uebergeordneten images-Verzeichnis. Und dort packte
+#
+#     7z ... A $UPLD$NAME.7z *
+#
+# den **gesamten Bestand aller Domaenen** in eine Datei unter /tmp. 412 GB.
+#
+# Daraus folgen die drei Aenderungen:
+#
+#   1. Jedes "cd" wird geprueft. Ein fehlendes Verzeichnis ist ein Fehler und
+#      beendet diesen Aufruf, statt die Arbeit woanders zu verrichten.
+#   2. Ein "trap" raeumt das Archiv in jedem Fall weg, auch bei Abbruch. Vorher
+#      stand das "rm" nur im geraden Ablauf; ein abgebrochener Lauf liess seine
+#      Datei fuer immer liegen, weil der Name den Zeitstempel traegt und das
+#      "rm" des naechsten Laufs ihn nie trifft.
+#   3. Was schon auf dem Server liegt, wird uebersprungen - und zwar GEPRUEFT
+#      BEVOR gepackt wird. Das Packen ist der teure Teil: ein Domaenen-
+#      verzeichnis sind mehrere Gigabyte, und nach einem Abbruch mitten im
+#      Lauf musste man bisher alles noch einmal durchpacken, auch das laengst
+#      Hochgeladene. Erkannt wird es am Muster <site>-<subsite>-*-<lauf>, der
+#      Zeitstempel im Namen bleibt also unerheblich.
+#      Antwortet der Server nicht, wird NICHTS uebersprungen. Im Zweifel
+#      lieber doppelt hochladen als eine Luecke hinterlassen.
+#   4. Das opkg-Verzeichnis wird gesucht statt geraten. Es stand fest auf
+#      "opkg-2023.2.x", waehrend im 2025.1-Bau "opkg-2025.1.x" liegt - dasselbe
+#      Muster, nur mit harmloserer Wirkung: das pushd scheiterte, und hochgeladen
+#      wurde ein Archiv des Site-Verzeichnisses unter dem Namen .opkg.7z.
+# ---------------------------------------------------------------------------
+set -u
+
+HOST=${1:?host fehlt}
+BRANCH=${2:?baum fehlt}
+RELEASE=${3:?release fehlt}
+SITE=${4:?site fehlt}
+SUBSITE=${5:?subsite fehlt}
+EXTRA=${6:-}
+
+UPLD=${SIGNUP_TMP:-/var/tmp/signup}
+USER=${SIGNUP_USER:-adorfer}
+PORT=${SIGNUP_PORT:-62954}
+
+melde() { printf '%s\n' "signup: $*" >&2; }
+ende()  { melde "$*"; exit 1; }
+
+# Dateiliste des Zielservers. signup-alle holt sie einmal und reicht sie
+# durch; ohne sie fragt jeder Aufruf selbst nach. Scheitert die Abfrage,
+# bleibt die Liste leer und es wird nichts uebersprungen.
+if [ -n "${SIGNUP_VORHANDEN+x}" ]; then
+    vorhanden=$SIGNUP_VORHANDEN
+else
+    vorhanden=$(ssh -p "${SIGNUP_PORT:-62954}" \
+        "${SIGNUP_USER:-adorfer}@$HOST" 'ls -1' 2>/dev/null) || vorhanden=""
+fi
+
+# Liegt ein Archiv dieses Laufes fuer diese Domaene schon oben? Der
+# Zeitstempel im Namen wird dabei ueberlesen.
+schon_oben() {
+    [ "${SIGNUP_NEU:-0}" = 1 ] && return 1
+    [ -n "$vorhanden" ] || return 1
+    muster="^$SITE-$SUBSITE-.*-$LASTIMAGE\\.$(printf '%s' "$1" | sed 's/\./\\./g')$"
+    printf '%s\n' "$vorhanden" | grep -qE "$muster"
+}
+
+mkdir -p "$UPLD" || ende "kann $UPLD nicht anlegen"
+
+cd "/home/build/$BRANCH/images" || ende "kein Bauverzeichnis /home/build/$BRANCH/images"
+
+# Das zuletzt fertiggestellte images-Verzeichnis. Sortiert wird nach der
+# Epoche hinter dem Bindestrich, nicht nach dem ganzen Namen: "sort -n" auf
+# "images-179..." liest alles als 0 und entscheidet dann nach Zufall.
+LASTIMAGE=$(ls -d images-* 2>/dev/null \
+    | sed 's/^images-//' | grep -E '^[0-9]+$' | sort -n | tail -1)
+[ -n "$LASTIMAGE" ] || ende "kein images-<epoche> in /home/build/$BRANCH/images"
+LASTIMAGE="images-$LASTIMAGE"
+
+START=$(date +%Y-%m-%d-%H%M)
+NAME="$SITE-$SUBSITE-$START-$LASTIMAGE"
+
+# Raeumt in jedem Fall auf: regulaeres Ende, Fehler, Ctrl-C, SIGTERM.
+trap 'rm -f "$UPLD/$NAME".*' EXIT INT TERM
+
+ZIEL="$LASTIMAGE/$SITE/$SUBSITE"
+cd "./$ZIEL" || ende "Verzeichnis fehlt: $ZIEL  (Tippfehler im Aufrufer? Domaene nicht gebaut?)"
+
+/usr/bin/sign dummy "./sysupgrade/$RELEASE.manifest" \
+    || ende "Unterschreiben fehlgeschlagen: $ZIEL/sysupgrade/$RELEASE.manifest"
+
+# Packen und hochladen. Getrennte Funktion, weil es bis zu dreimal vorkommt.
+packe_und_lade() {
+    verzeichnis=$1; endung=$2
+    if schon_oben "$endung"; then
+        printf '%s\n' "signup: $ZIEL.$endung liegt schon oben, uebersprungen"
+        return 0
+    fi
+    archiv="$UPLD/$NAME.$endung"
+    ( cd "$verzeichnis" && /usr/bin/7z -mx=1 -R A "$archiv" * >/dev/null ) \
+        || { melde "7z fehlgeschlagen fuer $verzeichnis"; return 1; }
+    [ -s "$archiv" ] || { melde "Archiv leer oder fehlt: $archiv"; return 1; }
+    scp -P "$PORT" "$archiv" "$USER@$HOST:." \
+        || { melde "scp fehlgeschlagen: $archiv"; return 1; }
+    rm -f "$archiv"
+    printf '%s\n' "signup: $ZIEL -> $NAME.$endung"
+}
+
+fehler=0
+if [ "$EXTRA" = packages ]; then
+    packe_und_lade ../../packages packages.7z || fehler=1
+
+    # Das opkg-Verzeichnis heisst je Gluon-Reihe anders. Suchen statt raten.
+    opkg=$(ls -d ../../opkg-* 2>/dev/null | head -1)
+    if [ -z "$opkg" ]; then
+        melde "kein opkg-Verzeichnis neben $ZIEL gefunden, uebersprungen"
+    else
+        packe_und_lade "$opkg" opkg.7z || fehler=1
+    fi
+else
+    packe_und_lade . 7z || fehler=1
+fi
+
+exit "$fehler"

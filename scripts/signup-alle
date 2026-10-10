@@ -1,0 +1,248 @@
+#!/bin/bash
+#
+# signup-alle - alle Domaenen eines fertigen Baus unterschreiben und hochladen.
+#
+# Ruft scripts/signup je Domaene einmal ohne und einmal mit "-key" auf. Die
+# erste Zeile nimmt zusaetzlich packages/ und opkg-*/ mit.
+#
+#   scripts/signup-alle                 alle Domaenen
+#   scripts/signup-alle 02_met 03_rat   nur diese (jeweils mit und ohne -key)
+#   scripts/signup-alle --ab 02_met     ab dieser Zeile weiter
+#   scripts/signup-alle --neu           auch das noch einmal, was schon oben liegt
+#
+# Normalerweise wird uebersprungen, was auf dem Zielserver schon liegt, und
+# zwar **bevor** gepackt wird. Nach einem Abbruch mitten im Lauf genuegt es
+# daher, das Skript einfach noch einmal zu starten.
+#
+# Die beiden letzten Formen sind fuer den Fall gedacht, dass ein Lauf in der
+# Mitte abgebrochen ist und ein Teil schon oben liegt. Die Liste unten muss
+# dafuer **nicht** angefasst werden - sie beschreibt den Soll-Bestand, nicht
+# den Fortschritt eines einzelnen Laufes.
+#
+# Was oben eingestellt wird: Zielserver, Bauverzeichnis und Branch. Die
+# auskommentierten Zeilen sind die ueblichen Alternativen.
+#
+# ---------------------------------------------------------------------------
+# Vorflugpruefung
+#
+# Vor dem ersten Hochladen wird geprueft, ob es jedes Verzeichnis der Liste im
+# Bau ueberhaupt gibt. Vorher fiel so etwas erst mitten im Lauf auf, und zwar
+# teuer: Am 10.10.2026 stand in Zeile 15 "02_met 02_mt" statt "02_met 02_met".
+# signup lief damit im falschen Verzeichnis weiter und packte den gesamten
+# Bestand aller Domaenen - 412 GB - in eine Datei unter /tmp. Die Platte des
+# Buildhosts war voll, bevor die zweite Domaene fertig war.
+#
+# signup selbst bricht einen solchen Aufruf inzwischen ab. Die Pruefung hier
+# kommt trotzdem dazu, denn sie meldet **alle** Luecken auf einmal und bevor
+# auch nur ein Byte uebertragen wurde. Ein Bau, dem Domaenen fehlen, ist
+# ausserdem fuer sich genommen eine Nachricht.
+# ---------------------------------------------------------------------------
+set -u
+
+hier=$(cd "$(dirname "$0")" && pwd)
+
+nur=""
+ab=""
+neu=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --ab) ab=${2:?--ab braucht eine Domaene}; shift 2 ;;
+        --neu) neu=1; shift ;;
+        -h|--hilfe|--help) sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*) echo "unbekannte Option: $1" >&2; exit 2 ;;
+        *) nur="$nur $1"; shift ;;
+    esac
+done
+
+dest=firmware6.ffnef.de
+#buildtree=sackgasse2021.x
+#buildtree=firmware2023.2.x
+buildtree=firmware2025.1.x
+#buildtree=firmware2023.2.x-adorfer
+#flavour=stable
+#flavour=sackgasse
+flavour=broken
+
+# site subsite [packages]
+domaenen="
+01_vel 01_vel packages
+01_vel 01_vel
+01_vel-key 01_vel
+02_met 02_met
+02_met-key 02_met
+03_rat 03_rat
+03_rat-key 03_rat
+04_hld 04_hld
+04_hld-key 04_hld
+05_mon 05_mon
+05_mon-key 05_mon
+06_han 06_han
+06_han-key 06_han
+07_erk 07_erk
+07_erk-key 07_erk
+08_hlg 08_hlg
+08_hlg-key 08_hlg
+09_lgf 09_lgf
+09_lgf-key 09_lgf
+10_wlf 10_wlf
+10_wlf-key 10_wlf
+11_lvr 11_lvr
+11_lvr-key 11_lvr
+12_dusuk 12_dusuk
+12_dusuk-key 12_dusuk
+13_dusfl 13_dusfl
+13_dusfl-key 13_dusfl
+14_bar 14_bar
+14_bar-key 14_bar
+15_mrh 15_mrh
+15_mrh-key 15_mrh
+16_gmb 16_gmb
+16_gmb-key 16_gmb
+17_wip 17_wip
+17_wip-key 17_wip
+18_nefuk 18_nefuk
+18_nefuk-key 18_nefuk
+19_agi 19_agi
+19_agi-key 19_agi
+20_grt 20_grt
+20_grt-key 20_grt
+21_dias 21_dias
+21_dias-key 21_dias
+22_dusukn 22_dusukn
+22_dusukn-key 22_dusukn
+23_dusuks 23_dusuks
+23_dusuks-key 23_dusuks
+24_dusukw 24_dusukw
+24_dusukw-key 24_dusukw
+30_sol 30_sol
+30_sol-key 30_sol
+31_lvrno 31_lvrno
+31_lvrno-key 31_lvrno
+32_lvrnw 32_lvrnw
+32_lvrnw-key 32_lvrnw
+33_lvrmo 33_lvrmo
+33_lvrmo-key 33_lvrmo
+34_lvrmw 34_lvrmw
+34_lvrmw-key 34_lvrmw
+35_lvrso 35_lvrso
+35_lvrso-key 35_lvrso
+36_lvrsw 36_lvrsw
+36_lvrsw-key 36_lvrsw
+37_siwin 37_siwin
+37_siwin-key 37_siwin
+38_siwiw 38_siwiw
+38_siwiw-key 38_siwiw
+39_sin 39_sin
+39_sin-key 39_sin
+40_sim 40_sim
+40_sim-key 40_sim
+41_sis 41_sis
+41_sis-key 41_sis
+42_siwil 42_siwil
+42_siwil-key 42_siwil
+43_bggl 43_bggl
+43_bggl-key 43_bggl
+44_llng 44_llng
+44_llng-key 44_llng
+45_brsd 45_brsd
+45_brsd-key 45_brsd
+46_odth 46_odth
+46_odth-key 46_odth
+47_roes 47_roes
+47_roes-key 47_roes
+48_rdvw 48_rdvw
+48_rdvw-key 48_rdvw
+"
+
+# --- Auswahl anwenden -----------------------------------------------------
+# "nur" trifft eine Domaene mit und ohne -key, denn wer "02_met" sagt, meint
+# beide Haelften. "--ab" laesst alles vor der genannten Zeile aus.
+auswahl=""
+gestartet=0
+[ -n "$ab" ] || gestartet=1
+while read -r site sub extra; do
+    [ -n "${site:-}" ] || continue
+    [ "$gestartet" = 1 ] || { [ "$site" = "$ab" ] && gestartet=1; }
+    [ "$gestartet" = 1 ] || continue
+    if [ -n "$nur" ]; then
+        treffer=0
+        for w in $nur; do
+            [ "$site" = "$w" ] || [ "$site" = "$w-key" ] && treffer=1
+        done
+        [ "$treffer" = 1 ] || continue
+    fi
+    auswahl="$auswahl$site $sub $extra
+"
+done <<EOF
+$domaenen
+EOF
+
+if [ -z "$auswahl" ]; then
+    echo "Die Auswahl trifft keine einzige Zeile der Liste." >&2
+    exit 2
+fi
+domaenen="$auswahl"
+
+# Fuer Tests ueberschreibbar; im Betrieb bleibt es beim Pfad unter /home/build.
+images="${SIGNUP_IMAGES:-/home/build/$buildtree/images}"
+cd "$images" || { echo "kein Bauverzeichnis $images" >&2; exit 1; }
+
+lauf=$(ls -d images-* 2>/dev/null | sed 's/^images-//' \
+    | grep -E '^[0-9]+$' | sort -n | tail -1)
+[ -n "$lauf" ] || { echo "kein images-<epoche> in $images" >&2; exit 1; }
+lauf="images-$lauf"
+echo "Bau: $buildtree/$lauf, Branch $flavour, Ziel $dest"
+
+# --- Vorflugpruefung ------------------------------------------------------
+fehlend=""
+while read -r site sub extra; do
+    [ -n "${site:-}" ] || continue
+    [ -d "$lauf/$site/$sub" ] || fehlend="$fehlend  $site/$sub\n"
+done <<EOF
+$domaenen
+EOF
+
+if [ -n "$fehlend" ]; then
+    echo "Diese Verzeichnisse fehlen im Bau, nichts wurde hochgeladen:" >&2
+    printf "$fehlend" >&2
+    echo "Entweder ein Tippfehler in der Liste oder der Bau ist unvollstaendig." >&2
+    exit 1
+fi
+
+# --- hochladen ------------------------------------------------------------
+# Die Dateiliste des Zielservers EINMAL holen und an alle Aufrufe
+# durchreichen. Sonst baut jeder der knapp 90 Aufrufe eine eigene
+# SSH-Sitzung nur fuer ein "ls" auf.
+if [ "$neu" = 1 ]; then
+    export SIGNUP_NEU=1
+    echo "--neu: es wird nichts uebersprungen."
+else
+    export SIGNUP_VORHANDEN
+    # Eine von aussen gesetzte Liste bleibt stehen. Das brauchen Tests, und
+    # es hilft, wenn der Zielserver gerade nicht per ssh erreichbar ist, die
+    # Liste aber auf anderem Weg vorliegt.
+    if [ -z "${SIGNUP_VORHANDEN:-}" ]; then
+        SIGNUP_VORHANDEN=$(ssh -p "${SIGNUP_PORT:-62954}" \
+            "${SIGNUP_USER:-adorfer}@$dest" 'ls -1' 2>/dev/null) || SIGNUP_VORHANDEN=""
+    fi
+    if [ -z "$SIGNUP_VORHANDEN" ]; then
+        echo "Hinweis: Dateiliste von $dest nicht lesbar - es wird nichts uebersprungen." >&2
+    else
+        echo "$(printf '%s\n' "$SIGNUP_VORHANDEN" | grep -c .) Dateien liegen auf $dest."
+    fi
+fi
+
+fehler=0
+while read -r site sub extra; do
+    [ -n "${site:-}" ] || continue
+    "$hier/signup" "$dest" "$buildtree" "$flavour" "$site" "$sub" ${extra:-} \
+        || { echo "FEHLER bei $site/$sub" >&2; fehler=$((fehler + 1)); }
+done <<EOF
+$domaenen
+EOF
+
+if [ "$fehler" -gt 0 ]; then
+    echo "$fehler von $(printf '%s' "$domaenen" | grep -c .) Aufrufen fehlgeschlagen." >&2
+    exit 1
+fi
+echo "alle Domaenen hochgeladen."
