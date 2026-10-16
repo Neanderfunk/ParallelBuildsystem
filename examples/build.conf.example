@@ -161,8 +161,9 @@ BUILD_TIMES_FILE="$SANDBOX_DIR/build-times.csv"
 #                     util-linux ab 2.38 (--map-user), flock, Kernel ab 5.11
 #                     (overlayfs mit userxattr), und unprivilegierte
 #                     User-Namespaces. Weder root noch sudo noch Docker.
-#                     Fehlt davon etwas, baut der Lauf SERIELL weiter - mit
-#                     fetter Warnung am Anfang und Erinnerung am Ende.
+#                     Fehlt davon etwas, bricht der Lauf am Anfang ab. Seriell
+#                     baut er dann nur mit --force (fette Warnung am Anfang,
+#                     Erinnerung am Ende).
 #
 # WORKER_START_DELAY  Sekunden zwischen dem Start zweier Worker. Die Last eines
 #                     Builds ist bimodal - lange serielle Strecken, kurze
@@ -204,10 +205,11 @@ METRICS=true
 # SPACE_CHECK         true: vor dem Lauf schaetzen, ob der Platz reicht. Reicht
 #                     er fuer den seriellen Lauf nicht, bricht build.sh gleich
 #                     ab. Reicht er seriell, aber nicht fuer alle Worker, baut
-#                     dieser Lauf mit so vielen Workern, wie passen - unter zwei
-#                     seriell, mit der BUILD_ORDER von oben. Laut angekuendigt.
+#                     dieser Lauf mit so vielen Workern, wie passen, laut
+#                     angekuendigt. Passt kein zweiter, bricht er ab; seriell
+#                     mit der BUILD_ORDER von oben nur mit --force.
 #                     WORKERS=1 ist ohnehin jederzeit der Schalter fuer
-#                     "seriell wie frueher".
+#                     "seriell wie frueher" und braucht kein --force.
 #
 # Die Schaetzung, gemessen am 09./10.09.2026 (Lauf mit 22 Targets, V=s):
 #

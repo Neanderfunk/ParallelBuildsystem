@@ -23,7 +23,7 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 ## 2. Aufruf und Optionen
 
 ```
-<buildsystem>/build.sh <build.conf> <targets.conf> <domains.conf> [target …] [--resume | --restart] [--detach]
+<buildsystem>/build.sh <build.conf> <targets.conf> <domains.conf> [target …] [--resume | --restart] [--force] [--detach]
 ```
 
 | Teil | Bedeutung |
@@ -34,6 +34,7 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 | `[target …]` | überschreibt `GLUON_TARGETS`, für einzelne Testbauten; jedes muss in `targets.conf` stehen (aktiv oder mit `-`), sonst sofort Abbruch |
 | `--resume` | abgebrochenen Lauf fortsetzen: nur Fehlendes bauen, Release-String und Ausgabeverzeichnis bleiben |
 | `--restart` | übrig gebliebenen Lauf verwerfen (`images/running` löschen) und neu anfangen |
+| `--force` | seriell bauen, obwohl `WORKERS` > 1 gewollt war und der Parallelbetrieb nicht geht (siehe 7.7, 7.9); ohne → Abbruch am Anfang |
 | `--detach` | abgekoppelt in einer tmux-Sitzung laufen und gleich verbinden, siehe unten |
 | *(keins von beiden)* | liegt noch ein `images/running` herum → Abbruch mit Hinweis |
 | `--worker=<target>` | intern, startet sich build.sh im Parallelbetrieb selbst; nicht von Hand |
@@ -553,7 +554,9 @@ build.sh (Hauptprozess, eigene UID)
 - Ergebnis:
   - reicht für alle Worker → wie konfiguriert
   - reicht nur für weniger → so viele Worker wie passen, laut angekündigt
-  - unter 2 → seriell mit der konfigurierten `BUILD_ORDER`
+  - unter 2 → **Abbruch**; der Lauf ist schon angelegt, nach dem Aufräumen
+    mit `--resume` weiter. Seriell mit der konfigurierten `BUILD_ORDER` nur
+    mit `--force`
   - reicht nicht mal seriell → Abbruch sofort (kostet dann nichts)
 
 ### 7.8 Fehler und Abbruch
@@ -580,12 +583,21 @@ build.sh (Hauptprozess, eigene UID)
 | setsid, flock | | util-linux |
 
 - Die Vorabprüfung macht einen **echten** Overlay-Mount wie die Worker
-  (inkl. `rm -rf` + Neuanlegen). Scheitert er oder fehlt ein Werkzeug, baut
-  der Lauf **seriell** weiter, mit fetter Warnung samt Abhilfe am Anfang und
-  Erinnerung am Ende - kein Abbruch.
+  (inkl. `rm -rf` + Neuanlegen). Scheitert er oder fehlt ein Werkzeug,
+  **bricht der Lauf ab**, mit fetter Warnung samt Abhilfe. Angelegt ist dann
+  noch nichts. Mit `--force` baut er stattdessen **seriell**, mit Warnung am
+  Anfang und Erinnerung am Ende.
+- Das gilt nur, wenn mehr als ein Worker gewollt war (`WORKERS` > 1, auch
+  aus `WORKERS=auto`). `WORKERS=1` ist gewollt seriell und braucht kein
+  `--force`.
+- Bis 16.10.2026 lief der Lauf hier ohne Abbruch seriell weiter. Auf
+  wir-horst sperrte nach einem Reboot AppArmor die User-Namespaces wieder
+  (der Schalter stand nur zur Laufzeit auf 0), und ein Volllauf mit 86
+  Domains fiel erst nach 9 h als seriell auf.
 - Die Einrichtung einmal als root, der Build-User selbst braucht keine Rechte.
 - wir-horst: overlay-Modul war anfangs nicht geladen, jetzt über
-  `modules-load.d` dauerhaft.
+  `modules-load.d` dauerhaft. Der AppArmor-Schalter steht seit 16.10.2026 in
+  `/etc/sysctl.d/99-…` (die `99-` schlägt Ubuntus `10-apparmor.conf`).
 
 ### 7.9b Overlay-Prüfung (knapper Flash)
 
