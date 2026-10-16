@@ -806,15 +806,46 @@ fat_warning ()
   echo
 }
 
+# Der Parallelbetrieb war gewollt (WORKERS > 1, auch aus WORKERS=auto), geht
+# auf diesem Host aber nicht. Ohne --force bricht der Lauf ab, mit --force baut
+# er seriell mit der konfigurierten BUILD_ORDER.
+#
+# Frueher lief er hier immer seriell weiter, nur mit fetter Warnung. Am
+# 16.10.2026 hat das einen Volllauf mit 86 Domains still seriell gestartet:
+# nach einem Reboot sperrte AppArmor die User-Namespaces wieder. Aufgefallen
+# ist es nach 9 h, bei 2 von 86 Domains - seriell haette der Lauf rund zehn
+# Tage gebraucht. Wer WORKERS=1 setzt, will seriell und braucht kein --force.
+#
+#   parallel_fallback <grund> <wie weiter> [zeile ...]
+#
+# <grund> kommt in die Erinnerung am Ende des Laufs, die Zeilen in den Kasten.
+# <wie weiter> steht nur beim Abbruch darin: wie es nach dem Beheben weitergeht.
+parallel_fallback ()
+{
+  local GRUND="$1" WEITER="$2"
+  shift 2
+  if [ "$FORCE" != true ]; then
+    fat_warning "PARALLELBETRIEB NICHT MOEGLICH - ABBRUCH. Seriell statt mit $WORKERS Workern gibt es nur mit --force." \
+                "$@" "" "$WEITER" \
+                "Ausdruecklich seriell: --force, oder WORKERS=1 in build.local.conf." \
+                "Ein serieller Volllauf dauert Tage."
+    abort "Parallelbetrieb nicht moeglich ($GRUND). Seriell nur mit --force."
+  fi
+  fat_warning "PARALLELBETRIEB NICHT MOEGLICH - mit --force baut dieser Lauf SERIELL (WORKERS=1, BUILD_ORDER=$BUILD_ORDER_KONFIG) statt mit $WORKERS Workern." \
+              "$@"
+  DEGRADIERT+=( "SERIELL statt mit $WORKERS Workern (--force): $GRUND" )
+  WORKERS=1
+  BUILD_ORDER="$BUILD_ORDER_KONFIG"
+}
+
 # Prueft vorab alles, was der Lauf an Werkzeugen und Dateien braucht, und
 # meldet ALLE Maengel auf einmal.
 #
-# Zwei Sorten Maengel: Fehlt etwas fuer den Bau selbst (git, make, ecdsasign,
-# der Schluessel ...), bricht der Lauf ab. Fehlt nur etwas fuer eine Zugabe -
-# den Parallelbetrieb oder den Collector -, laeuft er ohne sie weiter, mit
-# einer fetten Warnung: seriell mit der konfigurierten BUILD_ORDER bzw. ohne
-# Metriken. Ein Buildhost, auf dem das overlay-Modul fehlt, baut also trotzdem
-# - nur langsamer, und das steht unuebersehbar im Log.
+# Drei Sorten Maengel: Fehlt etwas fuer den Bau selbst (git, make, ecdsasign,
+# der Schluessel ...), bricht der Lauf ab. Fehlt etwas fuer den Parallelbetrieb,
+# obwohl WORKERS > 1 gewollt ist, bricht er ebenfalls ab; seriell baut er dann
+# nur mit --force (parallel_fallback). Fehlt nur python3 fuer den Collector,
+# laeuft er ohne Metriken weiter, mit einer fetten Warnung.
 #
 # Ohne das scheitert ein fehlendes Werkzeug erst dort, wo es gebraucht wird.
 # Das Tueckische daran ist die Reihenfolge: die Werkzeuge des Anfangs (git,
@@ -903,18 +934,14 @@ preflight_check ()
     abort "Bitte zuerst nachruesten. Der Lauf wuerde sonst erst dort scheitern, wo das Fehlende gebraucht wird - womoeglich Stunden nach dem Start."
   fi
 
-  # Parallelbetrieb nicht moeglich: seriell weiter, laut.
+  # Parallelbetrieb nicht moeglich: Abbruch, mit --force seriell weiter.
   if (( ${#PAR_FEHLT[@]} > 0 )); then
     local -a ZEILEN=( "Es fehlt:" )
     local M
     for M in "${PAR_FEHLT[@]}"; do ZEILEN+=( "  - $M" ); done
     [ -n "$USERNS_HINWEIS" ] && ZEILEN+=( "" "Abhilfe: $USERNS_HINWEIS" )
-    ZEILEN+=( "" "Der Bau laeuft trotzdem, nur langsamer. Ausdruecklich seriell: WORKERS=1." )
-    fat_warning "PARALLELBETRIEB NICHT MOEGLICH - dieser Lauf baut SERIELL (WORKERS=1, BUILD_ORDER=$BUILD_ORDER_KONFIG) statt mit $WORKERS Workern." \
-                "${ZEILEN[@]}"
-    DEGRADIERT+=( "SERIELL statt mit $WORKERS Workern: ${PAR_FEHLT[*]}" )
-    WORKERS=1
-    BUILD_ORDER="$BUILD_ORDER_KONFIG"
+    parallel_fallback "${PAR_FEHLT[*]}" \
+      "Beheben, dann neu starten; angelegt ist noch nichts." "${ZEILEN[@]}"
   fi
 
   echo "Vorabpruefung bestanden."
@@ -2628,9 +2655,9 @@ collector_stop ()
 #
 # Reicht es fuer den seriellen Lauf nicht, wird gleich hier abgebrochen - das
 # ist der Moment, in dem es nichts kostet. Reicht es seriell, aber nicht fuer
-# alle Worker, gibt es so viele Worker, wie passen; unter zwei heisst das
-# seriell, mit der BUILD_ORDER aus der Konfiguration. Laut angekuendigt, damit
-# niemand am Morgen ueber einen seriellen Lauf staunt.
+# alle Worker, gibt es so viele Worker, wie passen, laut angekuendigt. Passen
+# weniger als zwei, waere das seriell: dann Abbruch, mit --force seriell mit
+# der BUILD_ORDER aus der Konfiguration (parallel_fallback).
 #
 # Bei --resume zaehlen nur die Domains, die noch nicht abgeschlossen sind; der
 # Platz der fertigen ist schon belegt. Halb gebaute Domains zaehlen voll -
@@ -2673,10 +2700,15 @@ space_check ()
     DEGRADIERT+=( "WORKERS=$PASSEN statt $WORKERS: Plattenplatz" )
     WORKERS=$PASSEN
   else
-    fat_warning "Platz reicht nicht fuer den Parallelbetrieb - dieser Lauf baut SERIELL (WORKERS=1, BUILD_ORDER=$BUILD_ORDER_KONFIG)."
-    DEGRADIERT+=( "SERIELL statt mit $WORKERS Workern: Plattenplatz" )
-    WORKERS=1
-    BUILD_ORDER="$BUILD_ORDER_KONFIG"
+    # Der Lauf ist hier schon angelegt (prepare_run_state). Nach dem
+    # Aufraeumen geht es mit --resume weiter, seriell mit --resume --force.
+    parallel_fallback "Plattenplatz" \
+      "Der Lauf ist schon angelegt: danach mit --resume weiter." \
+      "Platz: $(( FREI / 1024 )) GB frei, gebraucht ~$(( SERIELL / 1024 )) GB seriell plus ~$(( JE_WORKER / 1024 )) GB je Worker." \
+      "Es passt kein zweiter Worker." \
+      "" \
+      "Abhilfe: alte images-* wegraeumen, weniger Domains bauen, oder die" \
+      "Schaetzung in build.conf (SPACE_*) anpassen."
   fi
 }
 
@@ -3513,6 +3545,9 @@ detach_build ()
 RESUME=false
 RESTART=false
 DETACH=false
+# --force: seriell bauen, obwohl WORKERS > 1 gewollt war und der Parallelbetrieb
+# nicht geht. Ohne bricht der Lauf dann ab, siehe parallel_fallback.
+FORCE=false
 # Intern: build.sh startet sich im Parallelbetrieb selbst als Worker fuer ein
 # Target, siehe start_worker. Nicht fuer den Aufruf von Hand gedacht.
 WORKER_TARGET=""
@@ -3527,6 +3562,7 @@ for ARG in "$@"; do
     --detach)   DETACH=true ;;
     --resume)   RESUME=true ;;
     --restart)  RESTART=true ;;
+    --force)    FORCE=true ;;
     --worker=*) WORKER_TARGET="${ARG#--worker=}" ;;
     *)          POSITIONAL_ARGS+=( "$ARG" ) ;;
   esac
@@ -3554,6 +3590,11 @@ if (( $# < 3 )); then
   echo "                images/running is removed, and release string and output"
   echo "                directory are formed anew. What the old run had already"
   echo "                built is reported before it is deleted."
+  echo "  --force       Builds serially when WORKERS > 1 was asked for (also via"
+  echo "                WORKERS=auto) but parallel building is impossible here"
+  echo "                (prerequisites missing, too little disk space). Without"
+  echo "                it, such a run aborts at the start. WORKERS=1 needs no"
+  echo "                --force."
   echo
   echo "  --detach      Runs the build detached from this terminal session, in"
   echo "                a tmux session named after the directory (else screen,"
