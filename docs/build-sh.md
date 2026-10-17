@@ -648,8 +648,15 @@ scripts/build-top --once --size 160x50 # ein Bild auf stdout
   letzte Logzeile
 - Matrix Domains × Targets (fertig / läuft / offen), zuletzt fertige
   Schritte mit Dauer
-- ETA: Schrittmittel je Target aus diesem Lauf, sonst aus dem vorigen,
-  verteilt auf die Worker wie die Warteschlange (längste zuerst)
+- ETA mit Datum (`TT.MM. HH:MM`). Je Target zählt der erste Schritt
+  (Toolchain, Kernel, Pakete) eigen, jeder weitere mit dem Median der
+  Folgeschritte: aus diesem Lauf, sonst aus dem vorigen, sonst aus allen
+  Targets. Verteilt auf die Worker wie die Warteschlange (längste zuerst).
+  Hintergrund: Im Lauf 26091920sta kostete der erste Schritt das 2- bis
+  6-fache der folgenden; das frühere Mittel über alle Schritte lag bei 18 %
+  Fortschritt bei 42,8 h statt tatsächlich 26,2 h, die jetzige Rechnung bei
+  29,9 h. Sie liegt weiter 10 bis 20 % zu hoch, weil auch die Folgeschritte
+  im Lauf noch billiger werden.
 - Tasten: `q` Ende, `+`/`-` Intervall (Standard 2 s, aus der Ferne 5 s),
   Leertaste sofort neu
 - Lokal kommen CPU, PSI, Speicher und Platte aus `/proc`, aus der Ferne aus
