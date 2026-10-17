@@ -500,21 +500,26 @@ def bt_rows(text):
 
 
 def prior_means(rows, rid=None):
-    """Mittlere Schrittzeit je Target im juengsten Lauf ausser rid."""
+    """Schrittzeiten je Target im juengsten Lauf ausser rid: {"first": Dauer
+    des ersten Schritts, "rest": Median der uebrigen}. Der erste Schritt eines
+    Targets baut Toolchain, Kernel und Pakete und kostet ein Mehrfaches der
+    folgenden (26091920sta: 2- bis 6-fach); ein gemeinsamer Mittelwert
+    ueberschaetzt die Restzeit deshalb stark."""
     runs = collections.OrderedDict()
     for t in rows:
         if t[4] == "build" and t[0] != rid:
             runs.setdefault(t[0], []).append(t)
     for r in reversed(list(runs.values())):
         by = collections.defaultdict(list)
-        for t in r:
+        for t in sorted(r, key=lambda t: int(t[2]) if t[2].isdigit() else 0):
             try:
                 by[t[7]].append(int(t[8]))
             except ValueError:
                 pass
         if by:
-            return {k: statistics.mean(v) for k, v in by.items()}
-    return {}
+            return {"first": {k: v[0] for k, v in by.items()},
+                    "rest": {k: statistics.median(v[1:]) for k, v in by.items() if len(v) > 1}}
+    return {"first": {}, "rest": {}}
 
 
 class BuildTimes:
@@ -673,7 +678,7 @@ class Monitor:
             rid = self.bt.run_id(self.sbranch)
             if rid:
                 return self.bt.steps(rid), self.bt.prior_means(rid)
-        return list(self.obs_steps), (self.remote_prior or {})
+        return list(self.obs_steps), (self.remote_prior or {"first": {}, "rest": {}})
 
     def workers(self):
         """Aktive Bauprozesse: Worker, im seriellen oder golden-Betrieb der
@@ -694,17 +699,35 @@ class Monitor:
                 return dm
         return code
 
+    def split_first(self, steps):
+        """Schrittzeiten je Target, getrennt in den ersten Schritt (erste
+        Domain der Liste, als erster Schritt des Targets gesehen) und die
+        uebrigen."""
+        d0 = self.run.domains[0] if self.run.domains else None
+        c0 = d0[:-4] if d0 and d0.endswith("-key") else d0
+        first, rest = {}, collections.defaultdict(list)
+        for s in sorted(steps, key=lambda s: s.get("end", 0)):
+            t = s["target"]
+            if t not in first and t not in rest and s.get("template") in (d0, c0):
+                first[t] = s["sec"]
+            else:
+                rest[t].append(s["sec"])
+        return first, rest
+
     def eta(self, steps, prior):
+        """Restzeit des Laufs. Je Target: offener erster Schritt mit seinen
+        eigenen Kosten, jeder weitere mit dem Median der Folgeschritte (dieser
+        Lauf, sonst Vorlauf, sonst Median aller Targets). Nachgespielt an
+        26091920sta (86 Domains x 20 Targets): bei 18 % Fortschritt 29,4 h statt
+        tatsaechlich 26,2 h (vorher mit dem Mittel aller Schritte 42,8 h)."""
         D = len(self.run.domains)
         if not D or not self.run.targets:
             return None, {}
-        by = collections.defaultdict(list)
-        for s in steps:
-            by[s["target"]].append(s["sec"])
-        allm = statistics.mean([s["sec"] for s in steps]) if steps else None
-        mean = {}
-        for t in self.run.targets:
-            mean[t] = statistics.mean(by[t]) if by[t] else prior.get(t, allm)
+        first, rest = self.split_first(steps)
+        p_first, p_rest = prior.get("first", {}), prior.get("rest", {})
+        all_rest = [v for vs in rest.values() for v in vs]
+        rest_all = statistics.median(all_rest) if all_rest else None
+        first_all = statistics.median(list(first.values())) if first else None
         done = collections.Counter(t for _, t in self.run.done)
         now = time.time()
         running = {}
@@ -713,15 +736,23 @@ class Monitor:
                 running[d["target"]] = now - int(d.get("seit", now))
             except ValueError:
                 running[d["target"]] = 0
-        rem = {}
+        rem, mean = {}, {}
         for t in self.run.targets:
+            r_t = statistics.median(rest[t]) if rest[t] else p_rest.get(t, rest_all)
+            f_t = first.get(t, p_first.get(t, first_all))
+            if r_t is None:
+                r_t = f_t
+            if f_t is None:
+                f_t = r_t
             left = D - done[t]
+            mean[t] = f_t if done[t] == 0 else r_t
             if left <= 0:
                 rem[t] = 0.0
                 continue
-            if mean[t] is None:
+            if r_t is None:
                 return None, mean
-            rem[t] = max(0.0, left * mean[t] - running.get(t, 0))
+            need = (f_t + (left - 1) * r_t) if done[t] == 0 else left * r_t
+            rem[t] = max(0.0, need - running.get(t, 0))
         try:
             W = int(self.run.head.get("workers") or 0)
         except ValueError:
@@ -806,7 +837,7 @@ class Monitor:
             ("Phase ", phase, C["run"] if phase.startswith("build") else C["warn"]),
         ]
         if eta is not None:
-            parts.append(("ETA ", time.strftime("%H:%M", time.localtime(time.time() + eta))
+            parts.append(("ETA ", time.strftime("%d.%m. %H:%M", time.localtime(time.time() + eta))
                           + " (noch %s)" % fmt_dur(eta), C["ok"]))
         if started:
             parts.append(("läuft ", fmt_clock(time.time() - started), C["val"]))
