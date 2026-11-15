@@ -1921,15 +1921,28 @@ prepare_gluon_tree ()
     || abort "\"make update\" failed."
 
   # Gluon's "make clean" is per target, so it has to be run for each of them.
+  #
+  # Targets that only a post-update patch registers (qualcommax-ipq50xx,
+  # -ipq60xx in -next) are unknown to Gluon at this point, and "make clean"
+  # would abort on them ("make config" lists the known targets and fails).
+  # Whether Gluon knows a target is decided by "make list-targets", not by
+  # the file targets/<target>: the reset above restores targets/targets.mk
+  # but leaves the untracked target file of the previous run in place, so
+  # the file exists while Gluon still does not know the target (15.11.2026).
+  # Their "make clean" is deferred until after the post-update patches, so
+  # nothing from the previous run is left behind for them either.
+  local -a CLEAN_LATER=()
   if [ "$MAKECLEAN" = true ]; then
+    local KNOWN_TARGETS
+    KNOWN_TARGETS="$(eval "make list-targets $ARGS" 2>/dev/null || true)"
+    if [ -z "$KNOWN_TARGETS" ]; then
+      echo "Warning: \"make list-targets\" returned nothing, cleaning every target now."
+    fi
     for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
       TARGET="${TARGETS[target_index]}"
-      # Targets that only a post-update patch creates (qualcommax-ipq50xx,
-      # -ipq60xx in -next) are unknown to Gluon in a fresh tree, and "make
-      # clean" would abort on them. Nothing has been built for them in such a
-      # tree, so there is nothing to clean either (14.11.2026).
-      if [ ! -e "targets/$TARGET" ]; then
-        echo "Skipping \"make clean\" for target $TARGET: Gluon does not know it yet (a post-update patch creates it), so nothing has been built for it in this tree."
+      if [ -n "$KNOWN_TARGETS" ] && ! printf '%s\n' "$KNOWN_TARGETS" | grep -qxF -- "$TARGET"; then
+        echo "Deferring \"make clean\" for target $TARGET: Gluon does not know it yet (a post-update patch registers it)."
+        CLEAN_LATER+=( "$TARGET" )
         continue
       fi
       echo "Cleaning the Gluon tree for target: $TARGET ..."
@@ -1944,6 +1957,21 @@ prepare_gluon_tree ()
   # external repositories.
   echo "Applying the post-update patches from patches/ ..."
   "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/prepare.sh" post-update
+
+  # The deferred "make clean" runs. A target still unknown here is reported
+  # by check_targets_known right below; skip it so that the message there,
+  # not a failing "make config", explains the abort.
+  if (( ${#CLEAN_LATER[@]} > 0 )); then
+    local KNOWN_NOW
+    KNOWN_NOW="$(eval "make list-targets $ARGS" 2>/dev/null || true)"
+    for TARGET in "${CLEAN_LATER[@]}"; do
+      printf '%s\n' "$KNOWN_NOW" | grep -qxF -- "$TARGET" || continue
+      echo "Cleaning the Gluon tree for target (deferred): $TARGET ..."
+      printf -v MAKE_CMD  "make clean GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
+      echo "$MAKE_CMD"
+      eval "$MAKE_CMD"
+    done
+  fi
 
   check_targets_known "$ARGS"
 
