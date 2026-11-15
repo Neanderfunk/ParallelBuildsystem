@@ -1924,6 +1924,14 @@ prepare_gluon_tree ()
   if [ "$MAKECLEAN" = true ]; then
     for (( target_index=0; target_index < ${#TARGETS[@]}; target_index += 1 )); do
       TARGET="${TARGETS[target_index]}"
+      # Targets that only a post-update patch creates (qualcommax-ipq50xx,
+      # -ipq60xx in -next) are unknown to Gluon in a fresh tree, and "make
+      # clean" would abort on them. Nothing has been built for them in such a
+      # tree, so there is nothing to clean either (14.11.2026).
+      if [ ! -e "targets/$TARGET" ]; then
+        echo "Skipping \"make clean\" for target $TARGET: Gluon does not know it yet (a post-update patch creates it), so nothing has been built for it in this tree."
+        continue
+      fi
       echo "Cleaning the Gluon tree for target: $TARGET ..."
       printf -v MAKE_CMD  "make clean GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
       echo "$MAKE_CMD"
