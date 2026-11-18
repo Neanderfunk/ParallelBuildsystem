@@ -194,10 +194,22 @@ BUILD_TIMES_FILE="$SANDBOX_DIR/build-times.csv"
 #                     man ihn einschaltet. Braucht python3; ohne laeuft der
 #                     Lauf mit Warnung ohne Metriken weiter.
 #
+# GOLDEN_COMPILE      true: der golden tree wird beim Neuaufbau mit der ersten
+#                     Domain seriell ueber alle Targets durchgebaut, erst dann
+#                     starten die Worker fuer die uebrigen Domains.
+#                     false: Baum je Target. Der golden tree wird nur
+#                     vorbereitet (Reset, Patches, make update, make clean,
+#                     Download), die Worker starten sofort und bauen jedes
+#                     Target ueber alle Domains. Lohnt bei wenigen Domains
+#                     (Multidomain: key und nokey), wo die serielle
+#                     golden-Phase den Lauf bestimmte. Jedes upperdir haelt
+#                     dann den ganzen Targetbau (SPACE_WORKER_FULL_MB).
+#
 WORKERS=1
 WORKER_START_DELAY=60
 WORKERS_AUTO_START=3
 METRICS=true
+GOLDEN_COMPILE=true
 
 
 # --- Plattenplatz ------------------------------------------------------------
@@ -221,6 +233,8 @@ METRICS=true
 # SPACE_TARGET_MB        je Target einmal: die eingesammelten opkg-Feeds
 # SPACE_WORKER_BASE_MB   je Worker: sein upperdir, 2,8 GB fuer die erste Domain
 # SPACE_WORKER_DOMAIN_MB ... plus 0,2 GB je weitere Domain
+# SPACE_WORKER_FULL_MB   statt SPACE_WORKER_BASE_MB bei GOLDEN_COMPILE=false:
+#                        das upperdir haelt den ganzen Targetbau (geschaetzt)
 # SPACE_RESERVE_MB       Luft, die nicht verplant wird
 #
 # DISK_FULL_MB           unter diesem Wert nennt ein Abbruch die volle Platte
@@ -231,6 +245,7 @@ SPACE_UNIT_MB=250
 SPACE_TARGET_MB=50
 SPACE_WORKER_BASE_MB=3000
 SPACE_WORKER_DOMAIN_MB=200
+SPACE_WORKER_FULL_MB=15000
 SPACE_RESERVE_MB=20480
 DISK_FULL_MB=1024
 

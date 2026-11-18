@@ -611,6 +611,11 @@ set_config_defaults ()
   WORKER_START_DELAY=60
   WORKERS_AUTO_START=3
   METRICS=true
+  # Parallelbetrieb: true = golden tree mit der ersten Domain seriell
+  # durchbauen, dann die uebrigen Domains in Overlays. false = Baum je Target:
+  # golden tree nur vorbereiten (prepare), jeder Worker baut sein Target ueber
+  # alle Domains von Anfang an, siehe build_parallel.
+  GOLDEN_COMPILE=true
 
   # Platzschaetzung vor dem Lauf, siehe space_check und build.conf.
   SPACE_CHECK=true
@@ -618,6 +623,9 @@ set_config_defaults ()
   SPACE_TARGET_MB=50
   SPACE_WORKER_BASE_MB=3000
   SPACE_WORKER_DOMAIN_MB=200
+  # Mit GOLDEN_COMPILE=false statt SPACE_WORKER_BASE_MB: das upperdir haelt
+  # dann den ganzen Targetbau, nicht nur das Delta zum golden tree.
+  SPACE_WORKER_FULL_MB=15000
   SPACE_RESERVE_MB=20480
   DISK_FULL_MB=1024
 
@@ -2852,7 +2860,9 @@ space_check ()
   done
 
   local -i SERIELL=$(( D * T * SPACE_UNIT_MB + T * SPACE_TARGET_MB + SPACE_RESERVE_MB ))
-  local -i JE_WORKER=$(( SPACE_WORKER_BASE_MB + D * SPACE_WORKER_DOMAIN_MB ))
+  local -i BASIS=$SPACE_WORKER_BASE_MB
+  [ "$GOLDEN_COMPILE" = true ] || BASIS=$SPACE_WORKER_FULL_MB
+  local -i JE_WORKER=$(( BASIS + D * SPACE_WORKER_DOMAIN_MB ))
 
   local ZUSATZ=""
   (( WORKERS > 1 )) && ZUSATZ=", dazu ~$(( JE_WORKER / 1024 )) GB je Worker"
@@ -2893,7 +2903,10 @@ announce_run_scope ()
   local -i D=${#ALL_SITE_TEMPLATE_NAMES[@]} T=${#BUILD_TARGETS[@]}
   local -i W=$(( WORKERS < T ? WORKERS : T ))
   local ART="seriell"
-  (( W > 1 )) && ART="parallel"
+  if (( W > 1 )); then
+    ART="parallel"
+    [ "$GOLDEN_COMPILE" = true ] || ART="parallel, Baum je Target"
+  fi
   echo "Umfang: $D Domains x $T Targets = $(( D * T )) Bauschritte, $W Worker ($ART)."
   echo "workers=$W" >> "$STATE_FILE"
 }
@@ -3125,13 +3138,42 @@ run_parallel ()
 }
 
 # Parallelbetrieb: golden tree sicherstellen, dann alle Targets parallel.
+#
+# GOLDEN_COMPILE=false (Baum je Target): der golden tree wird nur vorbereitet
+# - Reset, Patches, make update, make clean, Download - und nicht seriell
+# durchgebaut. Jeder Worker baut sein Target ueber ALLE Domains in seinem
+# Overlay, die erste eingeschlossen; die serielle golden-Phase entfaellt.
+# Lohnt bei wenigen Domains (Multidomain: key und nokey), wo golden die
+# meiste Zeit kostete (26111803bro: 120 von 181 min). Die Toolchains liegen
+# weiter im Baum: Gluons make clean raeumt nur build_dir/target-*,
+# staging_dir/target-* und bin/, nicht toolchain-* und host.
+#
+# Der Fingerabdruck traegt den Modus mit: "<fp>" heisst durchgebaut,
+# "<fp> prepared" nur vorbereitet. Ein durchgebauter Baum taugt auch fuer
+# GOLDEN_COMPILE=false (die Worker bauen dann inkrementell darauf), ein nur
+# vorbereiteter nicht fuer true - dort wird golden neu gebaut.
 build_parallel ()
 {
   local GFP
   GFP="$(golden_fingerprint "${ALL_SITE_GLUON_BRANCHES[0]}")"
+  local IST=""
+  [ -f "$GOLDEN_FP_FILE" ] && IST="$(cat -- "$GOLDEN_FP_FILE")"
 
-  if [ -f "$GOLDEN_FP_FILE" ] && [ "$(cat -- "$GOLDEN_FP_FILE")" = "$GFP" ]; then
+  if [ "$IST" = "$GFP" ]; then
     echo "Golden tree ist aktuell (Fingerabdruck ${GFP:0:16}) - prepare entfaellt, der Baum bleibt unberuehrt."
+  elif [ "$GOLDEN_COMPILE" != true ] && [ "$IST" = "$GFP prepared" ]; then
+    echo "Golden tree ist aktuell vorbereitet (Fingerabdruck ${GFP:0:16}) - prepare entfaellt, die Worker bauen jedes Target ganz."
+  elif [ "$GOLDEN_COMPILE" != true ]; then
+    echo "Baum je Target (GOLDEN_COMPILE=false): golden tree wird nur vorbereitet (prepare mit Reset und Clean), dann bauen die Worker jedes Target ueber alle Domains."
+
+    rm -f -- "$GOLDEN_FP_FILE"
+    local GITRESET=true
+    local MAKECLEAN=true
+    run_prepare
+
+    mkdir -p -- "$OVL_DIR"
+    echo "$GFP prepared" > "$GOLDEN_FP_FILE"
+    echo "Golden tree vorbereitet (Fingerabdruck ${GFP:0:16})."
   else
     echo "Golden tree fehlt oder ist veraltet - er wird neu gebaut: prepare mit Reset und Clean, dann die erste Domain seriell ueber alle Targets."
 

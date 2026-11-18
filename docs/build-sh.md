@@ -115,12 +115,14 @@ Später Geladenes gewinnt.
 | `WORKERS` | `1` | Zahl gleichzeitiger Targets; `auto` = Empfehlung des letzten Laufs |
 | `WORKER_START_DELAY` | `60` | Sekunden Versatz beim Hochfahren der Worker |
 | `WORKERS_AUTO_START` | `3` | Startwert für `auto` ohne Empfehlung |
+| `GOLDEN_COMPILE` | `true` | Parallelbetrieb: `true` = golden tree mit der ersten Domain seriell durchbauen; `false` = Baum je Target, golden tree nur vorbereiten, jeder Worker baut sein Target über alle Domains (7.3) |
 | `METRICS` | `true` | Collector sampelt Last, Empfehlung für den nächsten Lauf |
 | `SPACE_CHECK` | `true` | Platzschätzung vor dem Lauf mit Rückfall |
 | `SPACE_UNIT_MB` | `250` | je Domain × Target |
 | `SPACE_TARGET_MB` | `50` | je Target einmal (opkg-Feeds) |
 | `SPACE_WORKER_BASE_MB` | `3000` | je Worker, upperdir erste Domain |
 | `SPACE_WORKER_DOMAIN_MB` | `200` | je Worker und weitere Domain |
+| `SPACE_WORKER_FULL_MB` | `15000` | je Worker, upperdir mit ganzem Targetbau (statt `SPACE_WORKER_BASE_MB` bei `GOLDEN_COMPILE=false`; Schätzwert, noch nicht gemessen) |
 | `SPACE_RESERVE_MB` | `20480` | wird nicht verplant |
 | `DISK_FULL_MB` | `1024` | darunter nennt ein Abbruch die volle Platte als Ursache |
 | `DOWNLOAD_ATTEMPTS` | `5` | Versuche bei Netzfehler (jeder Netzschritt), `0` = kein Vorab-Download |
@@ -461,6 +463,28 @@ build-times.csv                     Zeiten aller Läufe
   halb geschrieben vor). Abhilfe `--resume`; scheitert es erneut an derselben
   Stelle, untersuchen. Bewusster Tradeoff gegen einen seriellen ersten Bau,
   siehe README.
+
+#### Baum je Target (`GOLDEN_COMPILE=false`)
+
+- Für Läufe mit wenigen Domains (Multidomain: key und nokey). Dort war golden
+  der größte Posten: `26111803bro` (2 Domains × 6 Targets, 5 Worker) 3 h 01 min,
+  davon prepare 16 min, golden 120 min seriell, Parallelphase 42 min.
+- prepare wie beim Neuaufbau (erzwungen `GITRESET` + `MAKECLEAN`, Download),
+  aber **keine serielle golden-Phase**. Die Worker starten sofort und bauen
+  jedes Target über **alle** Domains, die erste eingeschlossen.
+- Toolchains und Host-Werkzeuge bleiben im Baum: Gluons `make clean` räumt
+  nur `build_dir/target-*`, `staging_dir/target-*` und `bin/`. Fehlt eine
+  Toolchain (neue Architektur), baut sie der Worker in seinem Overlay, bei
+  jedem Lauf neu, bis wieder ein golden-Lauf sie in den Baum legt.
+- Fingerabdruck mit Modus: `<fp>` = durchgebaut, `<fp> prepared` = nur
+  vorbereitet. Ein durchgebauter Baum taugt auch hier (die Worker bauen
+  darauf inkrementell), ein nur vorbereiteter nicht für `GOLDEN_COMPILE=true`:
+  dort wird golden neu gebaut.
+- Kosten: jeder Worker kompiliert alle Pakete seines Targets selbst, sein
+  upperdir hält den ganzen Targetbau (`SPACE_WORKER_FULL_MB`). Bei vielen
+  Domains bleibt `true` günstiger, weil golden dort nur ein kleiner Teil ist.
+- Einschalten in `build.local.conf`; die Ausgabe nennt den Modus
+  („parallel, Baum je Target“).
 
 ### 7.4 Isolation eines Workers (rootless)
 
