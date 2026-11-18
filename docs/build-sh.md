@@ -94,7 +94,9 @@ Später Geladenes gewinnt.
 | Schlüssel | Default | Bedeutung |
 |---|---|---|
 | `SBRANCH_MODE` | `date` | Versions-String: `fixed` / `date` (`JJMMTTHH` + 3 Zeichen Branch, z. B. `26030610sta`) / `datetime` |
-| `SBRANCH_FIXED` | | String für `fixed` |
+| `SBRANCH_FIXED` | | String für `fixed`. Kommt der feste Name aus `build.local.conf`, muss ihn die Kommandozeile bestätigen: `CONFIRM_SBRANCH_FIXED=<Name>` |
+| `RELEASE_CHECK_URL` | | Basis-URL der veröffentlichten Firmware (`<URL>/<zweig>/<verz>/sysupgrade/<zweig>.manifest`). Leer: Release-Name nur gegen fertige Läufe unter `images/` geprüft |
+| `RELEASE_CHECK_BRANCHES` | `stable broken experimental` | Zweige, deren Manifeste die Release-Prüfung liest |
 | `MAKECLEAN` | `true` | einmal je Lauf `make clean` für jedes Target |
 | `GITRESET` | `true` | Gluon, Module und Feeds hart auf den Remote-Stand |
 | `MAKE_J_VAL` | `0` | make-Jobs, 0 = Kerne × `MAKE_J_FACTOR` |
@@ -992,3 +994,24 @@ Pull nach Lauf 6 gestartet.
   (Manifest, `build.log.gz`) erscheinen spät, die Target-Logs aber schon früher.
 - Laufzeit-Abschätzung 8.6 beruht auf dem gemessenen Faktor F mit 6 Targets.
   Für den Volllauf mit 22 Targets liefert erst ein echter Lauf den Wert.
+
+## Release-Name nur einmal (seit 18.11.2026)
+
+Vor dem Bau prüft `release_name_check`, ob der Release-Name (SBRANCH) schon
+vergeben ist: in einem fertigen Lauf unter `images/` (nicht `images/running`)
+oder in einem veröffentlichten Manifest unter `RELEASE_CHECK_URL`. Dann bricht
+der Bau ab, auch bei `SBRANCH_MODE=fixed`. Bei `--resume` entfällt die Prüfung.
+Anlass: Ein Multi-Domain-Testbau lief unter dem Namen eines ausgerollten
+Single-Domain-Stands, weil `SBRANCH_FIXED` in einer liegengebliebenen
+`build.local.conf` stand.
+
+Ausnahme für den seltenen Nachbau eines vergessenen Targets, nur auf der
+Kommandozeile: `REBUILD_EXISTING_RELEASE=1 ../build.sh ...`. Auch dann muss
+jede Variante des Baus (site_code aus `templates/<T>/site.conf`, Zweig aus der
+sites-Datei) im veröffentlichten Stand vorkommen; ein Multi-Domain-Bau unter
+dem Namen eines Single-Domain-Stands bleibt gesperrt. Kopf und Abschlussbericht
+nennen den Nachbau. Welche Targets im Feldstand fehlen, prüft build.sh nicht:
+hochladen nur die fehlenden, nie ein veröffentlichtes Image überschreiben.
+
+Test: `tests/release-name-check.sh` (lokaler HTTP-Server, 15 Fälle).
+

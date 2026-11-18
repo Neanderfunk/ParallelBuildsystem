@@ -580,6 +580,11 @@ set_config_defaults ()
   SBRANCH_MODE="date"
   SBRANCH_FIXED=""
 
+  # Pruefung des Release-Namens gegen veroeffentlichte Manifeste, siehe
+  # release_name_check. Leer: nur gegen die fertigen Laeufe unter images/.
+  RELEASE_CHECK_URL=""
+  RELEASE_CHECK_BRANCHES="stable broken experimental"
+
   MAKECLEAN=false
   GITRESET=false
 
@@ -1015,9 +1020,16 @@ load_build_config ()
   # Machine-local overrides, not tracked in Git.
   local LOCAL_CONFIG_FILE="$SANDBOX_DIR/build.local.conf"
 
+  # Fuer release_name_check: kam ein festes Release erst aus build.local.conf?
+  SBRANCH_FROM_LOCAL=false
+  local MODE_VORHER="$SBRANCH_MODE" FIXED_VORHER="$SBRANCH_FIXED"
+
   if [ -f "$LOCAL_CONFIG_FILE" ]; then
     echo "Reading the local build configuration from \"$LOCAL_CONFIG_FILE\" ..."
     source "$LOCAL_CONFIG_FILE"
+    if [ "$SBRANCH_MODE" != "$MODE_VORHER" ] || [ "$SBRANCH_FIXED" != "$FIXED_VORHER" ]; then
+      SBRANCH_FROM_LOCAL=true
+    fi
   fi
 }
 
@@ -1161,6 +1173,130 @@ determine_sbranch ()
   else
     echo "Firmware version (SBRANCH): $SBRANCH"
   fi
+}
+
+# Ein Release-Name gehoert genau einem Bau (adorfer 18.11.2026). Anlass: ein
+# Multi-Domain-Testbau lief unter dem Namen des ausgerollten Single-Domain-
+# stable, weil SBRANCH_FIXED in einer liegengebliebenen build.local.conf
+# stand. Karte, Statistik und Fehlersuche warfen danach beide zusammen.
+#
+# Abgebrochen wird, wenn der Name schon vorkommt
+#   - in einem fertigen Lauf unter images/ (Imagename gluon-*-<Name>-*),
+#   - in einem veroeffentlichten Manifest: je Zweig aus RELEASE_CHECK_BRANCHES
+#     alle Verzeichnisse unter RELEASE_CHECK_URL/<zweig>/ (aus der
+#     Verzeichnisseite), dort sysupgrade/<zweig>.manifest; gilt nur, wenn
+#     Zeile 1 mit BRANCH= beginnt (der Server liefert Fehlseiten mit 200).
+# Das gilt auch fuer SBRANCH_MODE=fixed. Bei --resume nicht: der Name stammt
+# dann aus der Zustandsdatei dieses Laufs.
+#
+# Ausnahme nur ueber die Kommandozeile, nicht ueber eine Datei, die liegen
+# bleibt: REBUILD_EXISTING_RELEASE=1 ../build.sh ...  Gedacht fuer den
+# seltenen Nachbau eines vergessenen Targets fuer einen Feldstand. Auch dann
+# muss jede Variante dieses Baus (site_code aus templates/<T>/site.conf, Zweig
+# aus der sites-Datei) im Feldstand schon vorkommen; ein Multi-Domain-Bau mit
+# dem Namen eines Single-Domain-Stands bleibt gesperrt. Welche Targets im
+# Feldstand fehlen, laesst sich vor dem Bau nicht pruefen (Target -> Geraete
+# ergibt erst der Bau): Hochladen duerfen nur die fehlenden, ein
+# veroeffentlichtes Image wird nie ueberschrieben.
+#
+# Ein festes Release aus build.local.conf muss zusaetzlich auf der
+# Kommandozeile bestaetigt werden: CONFIRM_SBRANCH_FIXED=<Name>.
+release_name_check ()
+{
+  [ "$RESUME" = true ] && return 0
+
+  if [ "$SBRANCH_MODE" = fixed ]; then
+    echo "################################################################"
+    if [ "$SBRANCH_FROM_LOCAL" = true ]; then
+      echo "# Release fest auf $SBRANCH aus build.local.conf"
+    else
+      echo "# Release fest auf $SBRANCH (SBRANCH_MODE=fixed)"
+    fi
+    echo "################################################################"
+    if [ "$SBRANCH_FROM_LOCAL" = true ] && [ "${CONFIRM_SBRANCH_FIXED:-}" != "$SBRANCH" ]; then
+      abort "The release name \"$SBRANCH\" is fixed by build.local.conf. If that is intended, confirm it on the command line: CONFIRM_SBRANCH_FIXED=$SBRANCH <build.sh call>. Otherwise remove SBRANCH_MODE/SBRANCH_FIXED from build.local.conf."
+    fi
+  fi
+
+  local -a FUNDE=()
+  local -A VORHANDEN=()   # "<zweig> <site_code>" des Feldstands
+  local F
+
+  F="$(find "$SANDBOX_DIR/images" -maxdepth 6 -path "$SANDBOX_DIR/images/running" -prune \
+         -o -name "gluon-*-$SBRANCH-*" -print 2>/dev/null | head -n 1 || true)"
+  [ -n "$F" ] && FUNDE+=( "finished run: ${F#"$SANDBOX_DIR"/}" )
+
+  if [ -n "$RELEASE_CHECK_URL" ]; then
+    command -v curl >/dev/null 2>&1 || abort "RELEASE_CHECK_URL is set, but curl is missing."
+    local ZWEIG LISTE VERZ M ZEILE SITE
+    local -i GEPRUEFT=0
+    for ZWEIG in $RELEASE_CHECK_BRANCHES; do
+      LISTE="$(curl -fsS -m 20 --retry 3 "$RELEASE_CHECK_URL/$ZWEIG/")" \
+        || abort "Release check: cannot read \"$RELEASE_CHECK_URL/$ZWEIG/\". Without it the release name cannot be checked against the published firmware."
+      for VERZ in $(printf '%s\n' "$LISTE" | grep -o "href=\"[^\"]*/$ZWEIG/[^\"/?#]*\"" \
+                      | sed -e 's/^href="//' -e 's/"$//' -e 's#.*/##' | sort -u || true); do
+        M="$(curl -fsS -m 20 --retry 2 "$RELEASE_CHECK_URL/$ZWEIG/$VERZ/sysupgrade/$ZWEIG.manifest" 2>/dev/null)" || continue
+        case "${M%%$'\n'*}" in BRANCH=*) ;; *) continue ;; esac   # Zeile 1 muss BRANCH= sein
+        GEPRUEFT+=1
+        while read -r ZEILE; do
+          SITE="${ZEILE#gluon-}"
+          SITE="${SITE%%-"$SBRANCH"-*}"
+          VORHANDEN["$ZWEIG $SITE"]=1
+        done < <(printf '%s\n' "$M" | awk -v r="$SBRANCH" 'NF >= 4 && $2 == r { print $NF }' | sort -u)
+        if printf '%s\n' "$M" | awk -v r="$SBRANCH" 'NF >= 4 && $2 == r { f = 1 } END { exit !f }'; then
+          FUNDE+=( "published: $RELEASE_CHECK_URL/$ZWEIG/$VERZ/sysupgrade/$ZWEIG.manifest" )
+        fi
+      done
+    done
+    echo "Release check: $GEPRUEFT published manifests read from $RELEASE_CHECK_URL ($RELEASE_CHECK_BRANCHES)."
+  else
+    echo "Release check: RELEASE_CHECK_URL is empty, only checked against the finished runs under images/."
+  fi
+
+  if (( ${#FUNDE[@]} == 0 )); then
+    echo "Release check: \"$SBRANCH\" is not used yet."
+    return 0
+  fi
+
+  printf 'Release name "%s" already exists:\n' "$SBRANCH"
+  printf '  %s\n' "${FUNDE[@]:0:10}"
+  (( ${#FUNDE[@]} > 10 )) && echo "  ... and $(( ${#FUNDE[@]} - 10 )) more"
+
+  if [ "${REBUILD_EXISTING_RELEASE:-}" != 1 ]; then
+    abort "The release name \"$SBRANCH\" is already in use (see above). A build must not reuse it. Rebuilding forgotten targets for an existing release: REBUILD_EXISTING_RELEASE=1 on the command line."
+  fi
+
+  # Nachbau: jede Variante dieses Baus muss es im Feldstand schon geben.
+  local -i I
+  local T CODE
+  local -a FEHLT=()
+  for (( I = 0; I < ${#ALL_SITE_TEMPLATE_NAMES[@]}; I += 1 )); do
+    T="${ALL_SITE_TEMPLATE_NAMES[$I]}"
+    CODE="$(sed -n "s/^[[:space:]]*site_code[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" \
+              "$SANDBOX_DIR/templates/$T/site.conf" 2>/dev/null | head -n 1)"
+    CODE="${CODE//SITECODE/${ALL_SITE_CODES[$I]}}"
+    CODE="${CODE//DOMAINNR/${ALL_SITE_DOMAIN_NRS[$I]}}"
+    CODE="${CODE//SITESMALL/${ALL_SITE_SITE_SMALLS[$I]}}"
+    CODE="${CODE//SITEBIG/${ALL_SITE_SITE_BIGS[$I]}}"
+    CODE="${CODE//FFPREFIX/${ALL_SITE_FF_PREFIXS[$I]}}"
+    CODE="${CODE//METAPREFIX/${ALL_SITE_META_PREFIXS[$I]}}"
+    if [ -z "$CODE" ] || [[ "$CODE" =~ [A-Z]{4,} ]] \
+       || [ -z "${VORHANDEN["${ALL_SITE_RELBRANCHES[$I]} $CODE"]:-}" ]; then
+      FEHLT+=( "${ALL_SITE_RELBRANCHES[$I]} ${CODE:-?} ($T)" )
+    fi
+  done
+  if (( ${#FEHLT[@]} != 0 )); then
+    printf 'Not in the published release "%s" (branch, site_code):\n' "$SBRANCH"
+    printf '  %s\n' "${FEHLT[@]:0:10}"
+    abort "REBUILD_EXISTING_RELEASE=1 only rebuilds targets for the same variant (site_code and branch) as the published release; this build differs (see above). A different variant needs its own release name."
+  fi
+
+  echo "################################################################"
+  echo "# Nachbau fuer bestehende Release $SBRANCH, Targets: ${*:-alle aus der targets-Datei}"
+  echo "# Nur fehlende Targets hochladen, nie ein veroeffentlichtes Image"
+  echo "# ueberschreiben."
+  echo "################################################################"
+  RELEASE_REBUILD_NOTE="Nachbau fuer bestehende Release $SBRANCH, Targets: ${*:-alle aus der targets-Datei}"
 }
 
 # Copies GLUON_TARGETS into ENABLED_TARGETS, dropping the entries that are
@@ -3094,6 +3230,7 @@ print_run_summary ()
   echo
   echo "$BALKEN"
   printf ' %-8s %s\n' "Lauf" "$SBRANCH -> images/${DIR##*/}  ($MODUS)"
+  [ -n "${RELEASE_REBUILD_NOTE:-}" ] && printf ' %-8s %s\n' "Nachbau" "$RELEASE_REBUILD_NOTE"
   printf ' %-8s %s\n' "Dauer" "$ZEIT"
   printf ' %-8s %s\n' "Umfang" "$D Domains x $T Targets = $(( D * T )) Bauschritte"
   [ -n "$ERL" ] && printf ' %-8s %s\n' "Worker" "$ERL"
@@ -3786,6 +3923,10 @@ sanitize_path
 determine_sbranch "$SITES_FILE"
 
 parse_sites_file "$SITES_FILE"
+
+# Vor prepare_run_state: ein --restart raeumt dort den alten Lauf weg, ein
+# Name, der nicht gebaut werden darf, soll vorher auffallen.
+release_name_check "$@"
 
 # Vor prepare_run_state, denn beides geht in den Fingerabdruck des Laufs ein.
 resolve_targets "$@"
