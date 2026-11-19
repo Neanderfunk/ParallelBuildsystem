@@ -3,8 +3,9 @@
 #
 # Test fuer die Weiche GOLDEN_COMPILE in build_parallel aus build.sh: die
 # Funktion wird herausgeloest, prepare, Bauschritte und Worker sind Attrappen,
-# die nur protokollieren. Geprueft wird, wann prepare und golden laufen und
-# was im Fingerabdruck steht.
+# die nur protokollieren. Geprueft wird, wann prepare und golden laufen,
+# was im Fingerabdruck steht, wo die Quellen geladen werden (im prepare oder
+# je Worker) und ob openwrt/dl vor den Workern dasteht.
 #
 #   tests/golden-compile.sh        braucht bash
 set -o errexit -o nounset -o pipefail
@@ -27,14 +28,14 @@ lauf () {
   LOG="$(bash -c '
     set -o errexit -o nounset -o pipefail
     . "'"$TMP"'/fn.sh"
-    OVL_DIR="'"$D"'"; GOLDEN_FP_FILE="$OVL_DIR/golden.fingerprint"
+    OVL_DIR="'"$D"'"; GOLDEN_FP_FILE="$OVL_DIR/golden.fingerprint"; GLUON_DIR="$OVL_DIR/gluon"
     GOLDEN_COMPILE="'"$MODUS"'"; BUILD_PHASE=build
     ALL_SITE_GLUON_BRANCHES=(main); BUILD_TARGETS=(t1 t2)
     golden_fingerprint () { echo abc123; }
-    run_prepare () { printf "prepare(reset=%s,clean=%s) " "$GITRESET" "$MAKECLEAN" >&3; }
+    run_prepare () { printf "prepare(reset=%s,clean=%s,dl=%s) " "$GITRESET" "$MAKECLEAN" "${DOWNLOAD_IN_WORKER:-prepare}" >&3; }
     run_build_step () { printf "golden:%s/%s:%s " "$1" "$2" "$BUILD_PHASE" >&3; }
     status_clear () { :; }
-    run_parallel () { printf "parallel" >&3; }
+    run_parallel () { [ -d "$GLUON_DIR/openwrt/dl" ] && printf "parallel" >&3 || printf "parallel-ohne-dl" >&3; }
     build_parallel >/dev/null
   ' 3>&1)"
   FP="$(cat "$D/golden.fingerprint" 2>/dev/null || echo -)"
@@ -48,8 +49,8 @@ lauf () {
   fi
 }
 
-G="prepare(reset=true,clean=true) golden:0/0:golden golden:0/1:golden parallel"
-P="prepare(reset=true,clean=true) parallel"
+G="prepare(reset=true,clean=true,dl=prepare) golden:0/0:golden golden:0/1:golden parallel"
+P="prepare(reset=true,clean=true,dl=true) parallel"
 
 lauf "golden, kein Baum"                 true  -                 "$G"       "abc123"
 lauf "golden, Baum aktuell"              true  "abc123"          "parallel" "abc123"

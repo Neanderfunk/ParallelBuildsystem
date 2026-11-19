@@ -207,7 +207,8 @@ Später Geladenes gewinnt.
   `lib-patch.sh`, idempotent über Marker)
 - danach `make list-targets`: kennt Gluon ein Target des Laufs nicht (etwa
   ein Tippfehler in `targets.conf`), Abbruch vor dem golden tree
-- Quellen herunterladen
+- Quellen herunterladen (`make download` je Target, nacheinander); bei
+  `GOLDEN_COMPILE=false` stattdessen je Worker (7.3)
 - Log: `assembled/prepare.log`, später in jedes Site-Verzeichnis kopiert
 
 ### 4.3 Bauschritt (Domain × Target)
@@ -363,7 +364,7 @@ images/
     .build-fingerprint              Eingaben je Posten, für die Meldung bei --resume (5)
     .site-seconds                   Bauzeit je Domain
     .status/<main|target>           Phase je Prozess (7.5)
-    buildinfo/                      Collector live: <lauf>.metrics.csv, <lauf>.collector.log
+    buildinfo/                      Collector live: <lauf>.metrics.csv, .io.csv, .io-top.csv, .collector.log
     packages/                       Gluon-Pakete
     opkg-2023.2.x/gluon-<sbranch>/<target>/<sub>/   opkg-Feeds
     <template>/<code>/
@@ -372,7 +373,7 @@ images/
                                     prepare.log, build-info.txt, build.log.gz
   images-<epoch>/                   fertiger Lauf
     buildinfo/                      <lauf>.summary.txt, .empfehlung.txt, .metrics.csv.gz,
-                                    .build-times.csv, .collector.log
+                                    .io.csv.gz, .io-top.csv.gz, .build-times.csv, .collector.log
 assembled/                          erzeugte Site-Konfigs, Roh-Logs laufender Schritte
 .overlays/                          Parallelbetrieb: Worker-Overlays, golden.fingerprint
 metrics/                            Collector: <lauf>.csv, empfehlung.txt
@@ -385,12 +386,14 @@ build-times.csv                     Zeiten aller Läufe
 | `site/build-<t>.log.gz` | nur während des Laufs: fertige Targets vor dem Abschluss |
 | `site/prepare.log` | Patch- und Update-Protokoll |
 | `site/build-info.txt` | Release, Domain, Bauzeit der Domain, Lauf von–bis, Host, Aufruf, Commits von Firmware-Repo, Gluon, Modulen und Patch-Repos (Soll vs. Ist), Kernel- und WLAN-Treiberversionen der gebauten Targets |
-| `build-times.csv` | `run_id,timestamp,epoch,build_order,phase,template,site_code,target,seconds,note`; Phasen `run_start`, `prepare`, `build`, `finalize`, `run_end` |
+| `build-times.csv` | `run_id,timestamp,epoch,build_order,phase,template,site_code,target,seconds,note`; Phasen `run_start`, `prepare`, `download` (je Worker, 7.3), `build`, `finalize`, `run_end` |
 | `.overlays/<target>.log` | Ausgabe eines Workers |
 | `detached.log` | Konsolenausgabe, nur bei `--detach` ohne tmux und screen |
 | `buildinfo/<lauf>.summary.txt` | der Kasten vom Laufende (Dauer, Umfang, Erlang, Images, Größen) |
 | `buildinfo/<lauf>.empfehlung.txt` | Empfehlung und Kennzahlen des Collectors (7.6) |
-| `buildinfo/<lauf>.metrics.csv(.gz)` | 1-s-Proben: CPU, iowait, Platte, steal, Phasen; während des Laufs live als `.csv` |
+| `buildinfo/<lauf>.metrics.csv(.gz)` | 1-s-Proben: CPU, iowait, Platte, steal, Phasen, Dirty/Writeback; während des Laufs live als `.csv` |
+| `buildinfo/<lauf>.io.csv(.gz)` | Lese-/Schreiblast je Worker und Sekunde (7.6) |
+| `buildinfo/<lauf>.io-top.csv(.gz)` | stärkste Prozessnamen je Worker, alle 10 s (7.6) |
 | `buildinfo/<lauf>.build-times.csv` | die Schrittzeiten nur dieses Laufs |
 | `buildinfo/<lauf>.collector.log` | Ergebniszeile des Collectors |
 
@@ -469,8 +472,8 @@ build-times.csv                     Zeiten aller Läufe
 - Für Läufe mit wenigen Domains (Multidomain: key und nokey). Dort war golden
   der größte Posten: `26111803bro` (2 Domains × 6 Targets, 5 Worker) 3 h 01 min,
   davon prepare 16 min, golden 120 min seriell, Parallelphase 42 min.
-- prepare wie beim Neuaufbau (erzwungen `GITRESET` + `MAKECLEAN`, Download),
-  aber **keine serielle golden-Phase**. Die Worker starten sofort und bauen
+- prepare wie beim Neuaufbau (erzwungen `GITRESET` + `MAKECLEAN`), aber
+  **ohne Download** und **ohne serielle golden-Phase**. Die Worker starten sofort und bauen
   jedes Target über **alle** Domains, die erste eingeschlossen.
 - Toolchains und Host-Werkzeuge bleiben im Baum: Gluons `make clean` räumt
   nur `build_dir/target-*`, `staging_dir/target-*` und `bin/`. Fehlt eine
@@ -480,6 +483,22 @@ build-times.csv                     Zeiten aller Läufe
   vorbereitet. Ein durchgebauter Baum taugt auch hier (die Worker bauen
   darauf inkrementell), ein nur vorbereiteter nicht für `GOLDEN_COMPILE=true`:
   dort wird golden neu gebaut.
+- **Download je Worker** (`worker_download`): Jeder Worker holt zu Beginn die
+  Quellen seines Targets (`make download` mit der ersten Domain), bevor die
+  erste Domain baut. Im prepare liefen die Targets nacheinander auf einem
+  Kern: `26111822bro` 24 × 1:40 min = 40 min, fast ohne Netz, die Zeit geht
+  in config und den Paketscan. Im Worker läuft der Schritt neben den
+  Bauschritten der anderen her.
+  - unter einer Sperre (`.overlays/download.lock`, flock), immer nur ein
+    Worker zugleich: `openwrt/dl` ist für alle Worker dasselbe Verzeichnis
+    (siehe 7.4), zwei Downloads derselben Datei schrieben sonst in dieselbe
+    `.dl`-Datei. Beim Hochfahren wartet der vierte Worker so gut 5 min
+  - Ausgabe vorn im Log der ersten Domain (`build-<target>.log`), Zeit als
+    Phase `download` in `build-times.csv`, die Wartezeit auf die Sperre als
+    Notiz `lock_wait=<s>`; der Kasten zeigt beides in der Zeile „Download“
+  - im Collector als Phase `download`: zählt für den Worker-Verkehr (Erlang)
+    als belegt, nicht aber für „alle belegt“ (7.6)
+  - bei `--resume` entfällt er für Targets, deren Domains alle gebaut sind
 - Kosten: jeder Worker kompiliert alle Pakete seines Targets selbst, sein
   upperdir hält den ganzen Targetbau (`SPACE_WORKER_FULL_MB`). Bei vielen
   Domains bleibt `true` günstiger, weil golden dort nur ein kleiner Teil ist.
@@ -494,8 +513,19 @@ build.sh (Hauptprozess, eigene UID)
      │                                                 User+Mount-Namespace, UID 0 darin
      ├─ mount --bind gluon  .overlays/<t>/lower         golden tree als lowerdir greifbar
      ├─ mount -t overlay … userxattr  auf gluon/        am ORIGINALPFAD
+     ├─ mount --bind lower/openwrt/dl  gluon/openwrt/dl  dl/ am Overlay vorbei (OVL_SHARE)
      └─ unshare -U --map-user=<uid> build.sh --worker=<t>   wieder eigene UID
 ```
+
+- **dl/ am Overlay vorbei** (`OVL_SHARE=openwrt/dl`, seit 19.11.2026): Was
+  ein Worker herunterlädt, landet direkt im `openwrt/dl` des golden tree und
+  überlebt das Verwerfen seines upperdir, für die anderen Worker und den
+  nächsten Lauf. Vorher blieb es im upperdir und war mit ihm weg. Streng
+  genommen ändert das die untere Schicht laufender Overlays; den Teilbaum
+  liest aber kein Overlay, weil der Bind-Mount ihn in jedem Worker verdeckt.
+  Fehlt `openwrt/dl` im golden tree oder ist es ein Symlink, bleibt es beim
+  Overlay (Meldung im Worker-Log). `build_parallel` legt es vor dem Start der
+  Worker an.
 
 - **Originalpfad**: OpenWrt schreibt absolute Pfade in `.prepared<hash>`;
   unter anderem Pfad würde alles neu gebaut.
@@ -513,8 +543,8 @@ build.sh (Hauptprozess, eigene UID)
 
 - `images/running/.status/<main|target>`: `phase`, `target`, `domain`, `seit`, `pid`
 - atomar geschrieben (tmp + mv)
-- Phasen: `prepare`, `golden`, `build`, `finalize`, dazu `netwait` im
-  Schlafmodus (siehe 5.1). Die zählt der Collector nicht als belegt.
+- Phasen: `prepare`, `golden`, `build`, `finalize`, `download` (Worker bei
+  `GOLDEN_COMPILE=false`, 7.3), dazu `netwait` im Schlafmodus (siehe 5.1). Die zählt der Collector nicht als belegt.
 - Nutzen: Collector ordnet jede Lastprobe einer Phase zu; zum Mitlesen:
   `grep -H phase images/running/.status/*`
 
@@ -535,6 +565,28 @@ build.sh (Hauptprozess, eigene UID)
   Das ist das Einzige, was ein KVM-Gast wie wir-horst davon sieht. Sie wird nur
   ausgewiesen (Ergebniszeile, `steal_kerne_*` in `empfehlung.txt`, CSV-Spalte
   `steal`), nicht in die Empfehlung eingerechnet
+- **Schreib- und Leselast je Worker** (seit 19.11.2026, `<lauf>.io.csv` und
+  `<lauf>.io-top.csv`): Anlass war `26111822bro`. Dort schrieb wir-horst
+  zweimal je eine halbe Stunde 150–160 MB/s bei 6–16 aktiven Kernen, während
+  die ersten Key-Schritte liefen, und die Systemwerte sagten nicht, wer
+  schreibt.
+  - je Sekunde `/proc/<pid>/io` aller eigenen Prozesse, summiert über die
+    Session; jeder Worker ist per `setsid` eine, die Statusdatei nennt die PID
+  - vollständig auch für kurzlebige Prozesse (`cp`, `ld`, `tar`): Der Kernel
+    rechnet die Zähler eines beendeten Kindes beim `wait()` dem Elternprozess
+    zu. Geprüft: `dd` in einem inneren `sh` erscheint nach dessen Ende beim
+    äußeren, auch über einen User-Namespace hinweg
+  - `io.csv`: `epoch,worker,phase,target,domain,lesen_mb_s,schreib_mb_s,verworfen_mb_s,prozesse`;
+    `verworfen` = `cancelled_write_bytes` (gelöscht, bevor es auf die Platte
+    kam). Zeile `sonst`: alle übrigen Prozesse des Benutzers
+  - `io-top.csv`: alle 10 s die fünf stärksten Prozessnamen je Worker. Was
+    ein Prozess in seiner letzten Sekunde schrieb, und alles von Prozessen
+    unter 1 s Laufzeit, steht beim Elternprozess (meist `make`, `sh`)
+  - Haupt-CSV zusätzlich `download`, `dirty_mb`, `writeback_mb`
+    (`/proc/meminfo`): hält der Kernel viel ungeschrieben zurück, kommt die
+    Plattenlast später als die Schreibzugriffe
+  - im Collector-Log zwei Zeilen `io:`, die Summen und die größten
+    Schreiber nach Schritt und nach Prozessname
 - Ausgewertet **nur** Proben, in denen alle Worker im Imagebau belegt sind
   (Hoch-/Auslaufen sagt nichts über freie Kapazität), mindestens 300 Proben
 - Regeln:

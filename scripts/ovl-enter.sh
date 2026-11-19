@@ -29,6 +29,17 @@
 # "cp -fpR" an denselben Ort. Auf fuse-overlayfs bleiben die Verzeichnisse aus
 # dem lowerdir danach sichtbar, und cp bricht mit "File exists" ab.
 #
+# OVL_SHARE (Umgebung, optional): Verzeichnisse relativ zum Baum, durch
+# Leerzeichen getrennt, die am Overlay vorbei direkt auf den golden tree
+# zeigen sollen - fuer openwrt/dl, damit Downloads eines Workers das
+# Verwerfen seines upperdir ueberleben. Dazu ein weiterer Bind-Mount von
+# <workerdir>/lower/<pfad> auf <mountpunkt>/<pfad>. Streng genommen aendert
+# das die untere Schicht eines laufenden Overlays, was overlayfs nicht
+# vorsieht; der Teilbaum wird aber von keinem Overlay je gelesen, weil der
+# Bind-Mount ihn in jedem Worker verdeckt, bevor dort etwas darauf zugreift.
+# Fehlt ein Verzeichnis im golden tree oder ist es ein Symlink, bleibt es
+# beim Overlay (ein Symlink zeigt ohnehin schon aus dem Baum heraus).
+#
 # Der Mount lebt nur in diesem Namespace und verschwindet mit dem letzten
 # Prozess darin - kein umount noetig, und der Hauptprozess wie jeder andere
 # Worker sieht den golden tree unveraendert.
@@ -52,5 +63,13 @@ mount --bind -- "$GOLDEN" "$WORKERDIR/lower"
 mount -t overlay overlay \
   -o "lowerdir=$WORKERDIR/lower,upperdir=$WORKERDIR/upper,workdir=$WORKERDIR/work,userxattr" \
   -- "$MOUNTPUNKT"
+
+for REL in ${OVL_SHARE:-}; do
+  if [ -d "$WORKERDIR/lower/$REL" ] && [ ! -L "$WORKERDIR/lower/$REL" ]; then
+    mount --bind -- "$WORKERDIR/lower/$REL" "$MOUNTPUNKT/$REL"
+  else
+    echo "ovl-enter.sh: $REL fehlt im golden tree oder ist ein Symlink - bleibt im Overlay." >&2
+  fi
+done
 
 exec unshare -U --map-user="$ZIEL_UID" --map-group="$ZIEL_GID" -- "$@"

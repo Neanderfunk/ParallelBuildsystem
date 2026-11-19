@@ -388,6 +388,9 @@ class ProcSampler:
 
 CSV_COLS = ("epoch,aktiv,iowait,util,schreib_mb,iops,prepare,golden,build,finalize,"
             "steal,running,blocked,psi_cpu,psi_io,psi_io_full,psi_mem").split(",")
+# Seit 19.11.2026 haengt der Collector download, dirty_mb, writeback_mb an.
+# Beide Fassungen gelten, damit auch aeltere Laeufe lesbar bleiben.
+CSV_COLS_NEU = CSV_COLS + ["download", "dirty_mb", "writeback_mb"]
 
 
 def csv_rows(text):
@@ -395,10 +398,10 @@ def csv_rows(text):
     rows = []
     for z in (text or "").splitlines():
         t = z.split(",")
-        if len(t) != len(CSV_COLS) or not t[0][:1].isdigit():
+        if len(t) not in (len(CSV_COLS), len(CSV_COLS_NEU)) or not t[0][:1].isdigit():
             continue
         r = {}
-        for k, v in zip(CSV_COLS, t):
+        for k, v in zip(CSV_COLS_NEU, t):
             try:
                 r[k] = float(v)
             except ValueError:
@@ -685,7 +688,7 @@ class Monitor:
         Hauptprozess."""
         out = []
         for name, d in sorted(self.run.status.items()):
-            if d.get("phase") in ("build", "golden", "netwait") and d.get("target", "-") != "-":
+            if d.get("phase") in ("build", "golden", "netwait", "download") and d.get("target", "-") != "-":
                 out.append(d)
         return out
 

@@ -2121,7 +2121,16 @@ prepare_gluon_tree ()
 
   # Erst jetzt, denn die post-update-Patches aendern Paketdefinitionen im
   # OpenWrt-Baum - vorher gezogen waeren es teils die falschen Quellen.
-  download_sources "$ARGS"
+  #
+  # Baum je Target (GOLDEN_COMPILE=false): nicht hier, sondern je Worker zu
+  # Beginn seines Targets, siehe worker_download. Hier liefen die Targets
+  # nacheinander auf einem Kern: 26111822bro 24 x 1:40 min = 40 min, fast
+  # ohne Netz - die Zeit geht in config und den Paketscan, nicht ins Laden.
+  if [ "${DOWNLOAD_IN_WORKER:-false}" = true ]; then
+    echo "Download der Quellen: je Worker zu Beginn seines Targets (GOLDEN_COMPILE=false)."
+  else
+    download_sources "$ARGS"
+  fi
 }
 
 # Builds one target of one domain. This is the unit of work that the two loop
@@ -2779,10 +2788,14 @@ collector_start ()
   # mit ">", beides kuerzt dieselbe Inode, die Links bleiben gueltig. Geht das
   # nicht (anderes Dateisystem), gibt es eben nur die Kopie am Ende.
   : > "$METRICS_DIR/$BUILD_RUN_ID.csv"
+  : > "$METRICS_DIR/$BUILD_RUN_ID.io.csv"
+  : > "$METRICS_DIR/$BUILD_RUN_ID.io-top.csv"
   : > "$METRICS_DIR/$BUILD_RUN_ID.log"
   local LIVE="$SANDBOX_DIR/images/running/buildinfo"
   if mkdir -p -- "$LIVE" 2>/dev/null; then
     ln -f -- "$METRICS_DIR/$BUILD_RUN_ID.csv" "$LIVE/$BUILD_RUN_ID.metrics.csv" 2>/dev/null || true
+    ln -f -- "$METRICS_DIR/$BUILD_RUN_ID.io.csv" "$LIVE/$BUILD_RUN_ID.io.csv" 2>/dev/null || true
+    ln -f -- "$METRICS_DIR/$BUILD_RUN_ID.io-top.csv" "$LIVE/$BUILD_RUN_ID.io-top.csv" 2>/dev/null || true
     ln -f -- "$METRICS_DIR/$BUILD_RUN_ID.log" "$LIVE/$BUILD_RUN_ID.collector.log" 2>/dev/null || true
   fi
   python3 "$BUILDSYS_DIR/scripts/buildcollect.py" \
@@ -2973,11 +2986,79 @@ worker_run ()
   # den golden tree darunter.
   cd -- "$GLUON_DIR"
 
+  if [ "$GOLDEN_COMPILE" != true ]; then
+    worker_download "$WORKER_TARGET"
+  fi
+
   for (( site_index=0; site_index < ${#ALL_SITE_RELBRANCHES[@]}; site_index += 1 )); do
     run_build_step "$site_index" 0
   done
 
   status_clear
+}
+
+# Laeuft IM Worker, nur bei GOLDEN_COMPILE=false: holt die Quellen seines
+# Targets, bevor die erste Domain baut - was download_sources sonst im prepare
+# fuer alle Targets nacheinander tat. So verteilt sich der Schritt auf die
+# Worker und laeuft neben den Bauschritten der anderen her.
+#
+# Unter einer Sperre ($OVL_DIR/download.lock), immer nur ein Worker zugleich:
+# openwrt/dl ist fuer alle Worker dasselbe Verzeichnis (OVL_SHARE), und zwei
+# gleichzeitige Downloads derselben Datei schrieben in dieselbe .dl-Datei.
+# Ein Schritt dauert ~1:40 min, davon fast alles config und Paketscan; beim
+# Hochfahren wartet der vierte Worker also gut 5 min, danach kaum noch.
+#
+# Die Ausgabe geht vorn in das Log der ersten Domain (build-<target>.log),
+# die Zeit als Phase "download" in build-times.csv, mit der Wartezeit auf die
+# Sperre in der Notiz. Sind alle Domains des Targets schon gebaut (--resume),
+# entfaellt der Schritt.
+worker_download ()
+{
+  local TARGET="$1"
+
+  if (( DOWNLOAD_ATTEMPTS <= 0 )); then
+    echo "Skipping the download step (DOWNLOAD_ATTEMPTS is $DOWNLOAD_ATTEMPTS)."
+    return 0
+  fi
+
+  local -i i OFFEN=0
+  for (( i=0; i < ${#ALL_SITE_CODES[@]}; i += 1 )); do
+    if ! state_has build "${ALL_SITE_TEMPLATE_NAMES[$i]}" "${ALL_SITE_CODES[$i]}" "$TARGET"; then
+      OFFEN+=1
+    fi
+  done
+  if (( OFFEN == 0 )); then
+    return 0
+  fi
+
+  local TEMPLATE_NAME="${ALL_SITE_TEMPLATE_NAMES[0]}" SITE_CODE="${ALL_SITE_CODES[0]}"
+  local ARGS
+  build_make_args "${ALL_SITE_RELBRANCHES[0]}" "$TEMPLATE_NAME" "$SITE_CODE"
+  get_site_log_filename "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET"
+
+  status_set download "$TARGET" "-"
+
+  local UPTIME
+  read_uptime_as_integer
+  local -i T0="$UPTIME"
+  local -i LOCK_FD
+  exec {LOCK_FD}> "$OVL_DIR/download.lock"
+  flock "$LOCK_FD"
+  read_uptime_as_integer
+  local -i T1="$UPTIME"
+
+  local MAKE_CMD STEP_CMD
+  printf -v MAKE_CMD "make download GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
+  printf -v STEP_CMD '{ echo "Downloading the sources for target %s (lock wait %ss) ..."; echo %q; %s; } 2>&1 | timestamp_lines | tee --append -- %q' \
+         "$TARGET" "$(( T1 - T0 ))" "$MAKE_CMD" "$MAKE_CMD" "$LOG_FILENAME"
+  # Als einfache Anweisung, nicht hinter "||" (siehe net_retry): scheitert
+  # der Download, beendet errexit den Worker, und die Sperre faellt mit ihm.
+  net_retry "make download ($TARGET)" "$STEP_CMD" "$LOG_FILENAME"
+
+  exec {LOCK_FD}>&-
+  read_uptime_as_integer
+  log_build_time download "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET" \
+                 "$(( UPTIME - T1 - NET_RETRY_WAITED ))" "lock_wait=$(( T1 - T0 ))"
 }
 
 # Startet einen Worker fuer ein Target, im Hintergrund, in einem frischen
@@ -3009,6 +3090,11 @@ start_worker ()
     # Wie viele Worker gleichzeitig laufen koennen, fuer die Job-Zahl je
     # Worker (JOB_COUNT in build_site_target).
     export PAR_WORKERS="$(( WORKERS < ${#BUILD_TARGETS[@]} ? WORKERS : ${#BUILD_TARGETS[@]} ))"
+    # Am Overlay vorbei auf den golden tree, siehe ovl-enter.sh: was ein
+    # Worker herunterlaedt, landet im gemeinsamen dl/ und ueberlebt das
+    # Verwerfen seines upperdir - fuer die anderen Worker und den naechsten
+    # Lauf. Vorher blieb es im upperdir und war mit ihm weg.
+    export OVL_SHARE="openwrt/dl"
     # setsid: eigene Prozessgruppe. Ein Signal an den Worker allein erreichte
     # sein make nicht - das ist ein Kind des Workers. An die Gruppe gerichtet
     # trifft es alles, was der Worker gestartet hat, und nicht den Hauptprozess.
@@ -3169,6 +3255,7 @@ build_parallel ()
     rm -f -- "$GOLDEN_FP_FILE"
     local GITRESET=true
     local MAKECLEAN=true
+    local DOWNLOAD_IN_WORKER=true
     run_prepare
 
     mkdir -p -- "$OVL_DIR"
@@ -3206,6 +3293,12 @@ build_parallel ()
   # Probe des Parallelbetriebs (Bedingung: niemand in golden/prepare) - im
   # ersten Lauf auf wir-horst gab es so 0 von 6887 Proben mit allen Workern belegt.
   status_clear
+
+  # Die Worker reichen openwrt/dl aus dem golden tree durch (OVL_SHARE in
+  # start_worker). Das Verzeichnis muss dafuer schon dastehen: nach einem
+  # prepare ohne Download (GOLDEN_COMPILE=false) gibt es es auf einem frischen
+  # Baum noch nicht.
+  mkdir -p -- "$GLUON_DIR/openwrt/dl"
 
   run_parallel
 }
@@ -3261,8 +3354,16 @@ print_run_summary ()
   if [ -n "$PAR_START_EPOCH" ] && [ -n "$PAR_END_EPOCH" ] && [ -f "$BUILD_TIMES_FILE" ] \
      && (( PAR_END_EPOCH > PAR_START_EPOCH )); then
     ERL=$(awk -F, -v r="$BUILD_RUN_ID" -v a="$PAR_START_EPOCH" -v w="$(( PAR_END_EPOCH - PAR_START_EPOCH ))" -v n="$WIRKSAM" -v x="$WIRKSAM_TXT" \
-      '$1 == r && $5 == "build" && $3 > a { s += $9; k++ }
+      '$1 == r && ($5 == "build" || $5 == "download") && $3 > a { s += $9; if ($5 == "build") k++ }
        END { if (k) printf "%.1f Erl von %d%s  (Parallelphase %d min, %d Bauschritte)", s / w, n, x, w / 60, k }' "$BUILD_TIMES_FILE")
+  fi
+  # Download je Worker (GOLDEN_COMPILE=false, worker_download): Zeit ohne
+  # die Wartezeit auf die Sperre, die steht in der Notiz.
+  local DL=""
+  if [ -f "$BUILD_TIMES_FILE" ]; then
+    DL=$(awk -F, -v r="$BUILD_RUN_ID" \
+      '$1 == r && $5 == "download" { s += $9; k++; if (match($10, /lock_wait=[0-9]+/)) w += substr($10, RSTART + 10, RLENGTH - 10) }
+       END { if (k) printf "%d Targets in den Workern, zusammen %d min, auf die Sperre gewartet %d min", k, s / 60, w / 60 }' "$BUILD_TIMES_FILE")
   fi
 
   local FREI
@@ -3276,6 +3377,7 @@ print_run_summary ()
   printf ' %-8s %s\n' "Dauer" "$ZEIT"
   printf ' %-8s %s\n' "Umfang" "$D Domains x $T Targets = $(( D * T )) Bauschritte"
   [ -n "$ERL" ] && printf ' %-8s %s\n' "Worker" "$ERL"
+  [ -n "$DL" ] && printf ' %-8s %s\n' "Download" "$DL"
   printf ' %-8s %s\n' "Images" "$(( N_SYS + N_FAC + N_OTH )) (sysupgrade $N_SYS, factory $N_FAC, other $N_OTH)"
   printf ' %-8s %s\n' "Groesse" "$(kb "$KB_ALL"): Images $(kb "$KB_IMG"), Pakete $(kb "$KB_PKG"), opkg $(kb "$KB_OPKG"), Logs $(kb "$KB_LOG")"
   [ -n "$FREI" ] && printf ' %-8s %s\n' "Platte" "$(( FREI / 1024 )) GB frei unter $SANDBOX_DIR"
@@ -3289,6 +3391,8 @@ print_run_summary ()
 #   <lauf>.empfehlung.txt   Empfehlung und Kennzahlen des Collectors
 #   <lauf>.collector.log    seine Ergebniszeile
 #   <lauf>.metrics.csv.gz   die 1-s-Proben (CPU, iowait, Platte, steal, Phasen)
+#   <lauf>.io.csv.gz        Lese-/Schreiblast je Worker und Sekunde
+#   <lauf>.io-top.csv.gz    die staerksten Prozessnamen je Worker, alle 10 s
 #   <lauf>.build-times.csv  die Schrittzeiten dieses Laufs aus BUILD_TIMES_FILE
 #   <lauf>.summary.txt      der Kasten vom Laufende (schreibt der Aufrufer)
 write_buildinfo ()
@@ -3306,6 +3410,12 @@ write_buildinfo ()
     if [ -f "$METRICS_DIR/$ID.csv" ] && gzip -9c -- "$METRICS_DIR/$ID.csv" > "$BI/$ID.metrics.csv.gz"; then
       rm -f -- "$BI/$ID.metrics.csv"
     fi
+    local IO
+    for IO in io io-top; do
+      if [ -f "$METRICS_DIR/$ID.$IO.csv" ] && gzip -9c -- "$METRICS_DIR/$ID.$IO.csv" > "$BI/$ID.$IO.csv.gz"; then
+        rm -f -- "$BI/$ID.$IO.csv"
+      fi
+    done
   fi
   if [ -f "$BUILD_TIMES_FILE" ]; then
     { head -n 1 -- "$BUILD_TIMES_FILE"; grep -- "^$ID," "$BUILD_TIMES_FILE" || true; } > "$BI/$ID.build-times.csv" || true
