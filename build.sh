@@ -2205,6 +2205,51 @@ build_site_target ()
   collect_opkg_feeds "$TARGET"
   check_overlay_headroom "$TARGET" "$TEMPLATE_NAME" "$SITE_CODE"
   report_rootfs_size "$TARGET" "$TEMPLATE_NAME" "$SITE_CODE"
+  report_openwrt_config "$TARGET" "$TEMPLATE_NAME" "$SITE_CODE"
+}
+
+# openwrt/.config des Bauschritts sichern und gegen die erste Site desselben
+# Targets vergleichen.
+#
+# Anlass: Der key-Bau packte in 26112222bro socat, linux-firmware,
+# neanderfunk-ddhcpd und neanderfunk-node-whisperer neu aus, als haette sich
+# ihre Konfiguration geaendert. Erwartet ist, dass sich die .config der
+# beiden Sites nur in CONFIG_GLUON_SITEDIR und CONFIG_GLUON_SITE_VERSION
+# unterscheidet. Ob das stimmt, zeigt der Vergleich.
+#
+# Ablage unter images/running/buildinfo/: config-<template>-<site>-<target>.txt
+# und fuer jede weitere Site config-diff-<template>-<site>-<target>.txt
+# (diff -u gegen die erste Site). Nur Diagnose, der Bau laeuft weiter.
+report_openwrt_config ()
+{
+  local TARGET="$1" TEMPLATE_NAME="$2" SITE_CODE="$3"
+  local DIR="$SANDBOX_DIR/images/running/buildinfo"
+  local CONF="$SANDBOX_DIR/gluon/openwrt/.config"
+  local OUT="$DIR/config-$TEMPLATE_NAME-$SITE_CODE-$TARGET.txt"
+  local FIRST="$DIR/config-${ALL_SITE_TEMPLATE_NAMES[0]}-${ALL_SITE_CODES[0]}-$TARGET.txt"
+  local DIFF="$DIR/config-diff-$TEMPLATE_NAME-$SITE_CODE-$TARGET.txt"
+
+  mkdir -p "$DIR"
+  if [ ! -f "$CONF" ]; then
+    echo "  .config-Sicherung $TARGET: openwrt/.config fehlt - uebersprungen."
+    return 0
+  fi
+  cp -- "$CONF" "$OUT" || { echo "  .config-Sicherung $TARGET: cp fehlgeschlagen - uebersprungen."; return 0; }
+
+  if [ "$OUT" = "$FIRST" ] || [ ! -f "$FIRST" ]; then
+    echo "  .config-Sicherung $TARGET: $(basename "$OUT")"
+    return 0
+  fi
+  local -i RC=0 N
+  diff -u -- "$FIRST" "$OUT" > "$DIFF" || RC=$?
+  if (( RC > 1 )); then
+    echo "  .config-Vergleich $TARGET: diff fehlgeschlagen - uebersprungen."
+    return 0
+  fi
+  N="$(grep -c '^[-+]CONFIG\|^[-+]# CONFIG' "$DIFF" || true)"
+  local ANDERE
+  ANDERE="$(grep '^[-+]CONFIG\|^[-+]# CONFIG' "$DIFF" | grep -cv 'CONFIG_GLUON_SITE\(DIR\|_VERSION\)=' || true)"
+  echo "  .config-Vergleich $TARGET gegen ${ALL_SITE_CODES[0]}: $N geaenderte Zeilen, davon $ANDERE ausser Site-Pfad und -Version - $(basename "$DIFF")"
 }
 
 # Wie gross ist das Ausgangs-Rootfs, das OpenWrt fuer jeden Geraete-Rootfs

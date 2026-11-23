@@ -710,6 +710,18 @@ mediatek-filogic schrieb in `26112222bro` je Site rund 173 GB mit `cp`,
 also gut 5 GB je Kopie; ath79 kommt bei ebenso vielen Paketen auf keine
 0.5 GB. Nur Diagnose, der Bau läuft weiter.
 
+### 7.9d .config je Bauschritt (Diagnose)
+
+Nach jedem Bauschritt sichert `report_openwrt_config` `openwrt/.config` nach
+`images/running/buildinfo/config-<template>-<site>-<target>.txt` und
+vergleicht jede weitere Site mit der ersten desselben Targets
+(`config-diff-<template>-<site>-<target>.txt`, `diff -u`). Das Log nennt die
+Zahl der geänderten Zeilen und wie viele davon nicht `CONFIG_GLUON_SITEDIR`
+oder `CONFIG_GLUON_SITE_VERSION` sind. Anlass: Der key-Bau packte in
+`26112222bro` socat, linux-firmware, neanderfunk-ddhcpd und
+neanderfunk-node-whisperer neu aus, als hätte sich ihre Konfiguration
+geändert. Nur Diagnose, der Bau läuft weiter.
+
 ### 7.9b Overlay-Prüfung (knapper Flash)
 
 Nach jedem Bauschritt rechnet `check_overlay_headroom` für jedes NOR-Gerät
