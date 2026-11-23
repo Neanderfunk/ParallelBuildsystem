@@ -493,6 +493,11 @@ build-times.csv                     Zeiten aller Läufe
     Worker zugleich: `openwrt/dl` ist für alle Worker dasselbe Verzeichnis
     (siehe 7.4), zwei Downloads derselben Datei schrieben sonst in dieselbe
     `.dl`-Datei. Beim Hochfahren wartet der vierte Worker so gut 5 min
+  - seit 23.11.2026 läuft Gluons `make config` vorher außerhalb der Sperre
+    (Site-Prüfung, Paketscan, defconfig; fasst `openwrt/dl` nicht an), unter
+    ihr wiederholt `make download` den config-Schritt mit fertigem Scan in
+    rund 30 s. Anlass: `26112222bro`, zusammen 18 min Wartezeit. Notiz in
+    `build-times.csv`: `lock_wait=<s> config=<s>`
   - Ausgabe vorn im Log der ersten Domain (`build-<target>.log`), Zeit als
     Phase `download` in `build-times.csv`, die Wartezeit auf die Sperre als
     Notiz `lock_wait=<s>`; der Kasten zeigt beides in der Zeile „Download“
@@ -676,6 +681,34 @@ build.sh (Hauptprozess, eigene UID)
 - wir-horst: overlay-Modul war anfangs nicht geladen, jetzt über
   `modules-load.d` dauerhaft. Der AppArmor-Schalter steht seit 16.10.2026 in
   `/etc/sysctl.d/99-…` (die `99-` schlägt Ubuntus `10-apparmor.conf`).
+
+### 7.9a Weitere Sites eines Targets: Paketausgabe behalten
+
+Gluons `scripts/clean_output.lua` löscht vor jedem vollen Bau
+`bin/targets/<board>/<sub>/packages`. Der zweite Site-Bau eines Targets
+(key nach nokey) packte deshalb alle kmods und übrigen nonshared-Pakete neu,
+obwohl sie gleich sind (`26112222bro`, ath79-generic: 1036 kmods, 19 von
+39 min). `build_site_target` setzt deshalb `NF_KEEP_TARGET_PACKAGES=1`, wenn
+die erste Site dieses Targets im Lauf schon gebaut ist; der
+FirmwareConfigs-Patch `patches/build/gluon-clean-output-keep-packages.patch`
+lässt das Verzeichnis dann stehen. Der erste Bau eines Targets räumt wie
+bisher auf. Ohne den Patch ignoriert Gluon die Variable.
+
+Nicht behoben: Einmal je Site-Bau linkt der Kernel neu (10 s bis 3 min).
+Gluons `make config` ruft `prepare-tmpinfo` auf, das `tmp/.build` jedes Mal
+neu setzt; dann läuft `target/linux`, und `Kernel/CompileModules` löscht
+`vmlinux`. Der `.config`-mtime-Patch ändert daran nichts.
+
+### 7.9c Rootfs-Größen (Diagnose)
+
+Nach jedem Bauschritt schreibt `report_rootfs_size` die Größe von
+`root.orig-*` und `root-*`, Zahl und Summe der Geräte-Rootfs `target-dir-*`
+und die 25 größten Dateien in `root.orig-*` nach
+`images/running/buildinfo/rootfs-<template>-<site>-<target>.txt`. Anlass:
+mediatek-filogic schrieb in `26112222bro` je Site rund 173 GB mit `cp`,
+30 Kopien von `root.orig-mediatek` (`include/image.mk`, `target-dir-%`),
+also gut 5 GB je Kopie; ath79 kommt bei ebenso vielen Paketen auf keine
+0.5 GB. Nur Diagnose, der Bau läuft weiter.
 
 ### 7.9b Overlay-Prüfung (knapper Flash)
 

@@ -2162,11 +2162,28 @@ build_site_target ()
     fi
   fi
 
-  local MAKE_CMD
+  local MAKE_CMD KEEP=""
+
+  # Weitere Site desselben Targets (key nach nokey): Gluons clean_output.lua
+  # soll die Paketausgabe bin/targets/<board>/<sub>/packages stehen lassen,
+  # sonst packt OpenWrt alle kmods neu (26112222bro ath79: 19 von 39 min).
+  # Nur wenn die erste Site dieses Targets in diesem Lauf schon gebaut ist;
+  # der erste Bau raeumt wie bisher auf, damit nichts Altes in den Feed
+  # geraet. Wirkt nur mit FirmwareConfigs-Patch
+  # patches/build/gluon-clean-output-keep-packages.patch, sonst ignoriert
+  # Gluon die Variable.
+  if [ "$TEMPLATE_NAME/$SITE_CODE" != "${ALL_SITE_TEMPLATE_NAMES[0]}/${ALL_SITE_CODES[0]}" ] &&
+     state_has build "${ALL_SITE_TEMPLATE_NAMES[0]}" "${ALL_SITE_CODES[0]}" "$TARGET"; then
+    KEEP=1
+  fi
 
   echo "GLUONDEVICEs $GLUONDEVICES"
   echo "Building the firmware for site code: $SITE_CODE, target: $TARGET ..."
-  printf -v MAKE_CMD "make GLUON_TARGET=%q"  "$TARGET"
+  if [ -n "$KEEP" ]; then
+    echo "Keeping the package output of the first site (NF_KEEP_TARGET_PACKAGES=1)."
+    MAKE_CMD="NF_KEEP_TARGET_PACKAGES=1 "
+  fi
+  printf -v MAKE_CMD "%smake GLUON_TARGET=%q"  "$MAKE_CMD"  "$TARGET"
   # For the Gluon build system, V=s means generate a full build log (show build commands, compiler warnings etc.).
   if [ "$VERBOSE_BUILD" = true ]; then
     MAKE_CMD+=" V=s"
@@ -2187,6 +2204,41 @@ build_site_target ()
 
   collect_opkg_feeds "$TARGET"
   check_overlay_headroom "$TARGET" "$TEMPLATE_NAME" "$SITE_CODE"
+  report_rootfs_size "$TARGET" "$TEMPLATE_NAME" "$SITE_CODE"
+}
+
+# Wie gross ist das Ausgangs-Rootfs, das OpenWrt fuer jeden Geraete-Rootfs
+# kopiert (include/image.mk, target-dir-%: cp -fpR root.orig-<board>)?
+#
+# Anlass: mediatek-filogic schrieb in 26112222bro je Site rund 173 GB allein
+# mit cp, 30 Kopien von root.orig-mediatek, also gut 5 GB je Kopie; ath79
+# mit ebenso vielen Paketen keine 0.5 GB. Woran das liegt, zeigen die Logs
+# nicht. Nur Diagnose, der Bau laeuft weiter: Groesse der Wurzeln, Zahl und
+# Summe der target-dir-*, die 25 groessten Dateien in root.orig-*. Ergebnis
+# im Log und unter images/running/buildinfo/rootfs-<template>-<site>-<target>.txt.
+report_rootfs_size ()
+{
+  local TARGET="$1" TEMPLATE_NAME="$2" SITE_CODE="$3"
+  local OUT="$SANDBOX_DIR/images/running/buildinfo/rootfs-$TEMPLATE_NAME-$SITE_CODE-$TARGET.txt"
+  local BD="$SANDBOX_DIR/gluon/openwrt/build_dir"
+
+  mkdir -p "$(dirname "$OUT")"
+  {
+    echo "# Rootfs-Groessen nach dem Bau, KB (du -sk)"
+    find "$BD" -maxdepth 1 -name 'target-*' -type d -exec find {} -maxdepth 1 \( -name 'root.orig-*' -o -name 'root-*' \) -type d \; 2>/dev/null |
+      while read -r D; do du -sk "$D" 2>/dev/null; done
+    local -i N=0 KB=0 K
+    local D
+    while read -r D; do
+      K="$(du -sk "$D" 2>/dev/null | cut -f1)" || K=0
+      N+=1; KB+=K
+    done < <(find "$BD" -mindepth 3 -maxdepth 3 -name 'target-dir-*' -type d 2>/dev/null)
+    echo "target-dir-*: $N Verzeichnisse, zusammen $KB KB"
+    echo "# Groesste Dateien in root.orig-* (Bytes)"
+    find "$BD" -mindepth 2 -maxdepth 2 -name 'root.orig-*' -type d -exec find {} -type f -printf '%s %P\n' \; 2>/dev/null |
+      sort -rn | sed -n 1,25p
+  } > "$OUT" 2>&1 || true
+  echo "  Rootfs-Groessen $TARGET: $(sed -n 2p "$OUT" 2>/dev/null) - Einzelheiten in $(basename "$OUT")"
 }
 
 # Wie viel beschreibbarer Flash (jffs2-Overlay) bleibt auf den NOR-Geraeten?
@@ -3040,6 +3092,22 @@ worker_download ()
 
   local UPTIME
   read_uptime_as_integer
+  local -i TC="$UPTIME"
+
+  # Gluons "make config" (Site-Pruefung, prepare-tmpinfo mit Paketscan,
+  # defconfig) vor der Sperre: er fasst openwrt/dl nicht an und lief bisher
+  # unter der Sperre mit, gut 1:30 der ~2 min. In 26112222bro warteten die
+  # Worker zusammen 18 min auf die Sperre. Unter ihr wiederholt "make
+  # download" den config-Schritt, mit fertigem Scan in rund 30 s.
+  local CONFIG_CMD CONFIG_STEP
+  printf -v CONFIG_CMD "make config GLUON_TARGET=%q  %s"  "$TARGET"  "$ARGS"
+  printf -v CONFIG_STEP '{ echo "Configuring target %s before the download lock ..."; echo %q; %s; } 2>&1 | timestamp_lines | tee --append -- %q' \
+         "$TARGET" "$CONFIG_CMD" "$CONFIG_CMD" "$LOG_FILENAME"
+  # Wie unten als einfache Anweisung: scheitert config, beendet errexit
+  # den Worker.
+  eval "$CONFIG_STEP"
+
+  read_uptime_as_integer
   local -i T0="$UPTIME"
   local -i LOCK_FD
   exec {LOCK_FD}> "$OVL_DIR/download.lock"
@@ -3058,7 +3126,7 @@ worker_download ()
   exec {LOCK_FD}>&-
   read_uptime_as_integer
   log_build_time download "$TEMPLATE_NAME" "$SITE_CODE" "$TARGET" \
-                 "$(( UPTIME - T1 - NET_RETRY_WAITED ))" "lock_wait=$(( T1 - T0 ))"
+                 "$(( UPTIME - T1 - NET_RETRY_WAITED ))" "lock_wait=$(( T1 - T0 )) config=$(( T0 - TC ))"
 }
 
 # Startet einen Worker fuer ein Target, im Hintergrund, in einem frischen
