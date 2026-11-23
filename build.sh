@@ -2162,7 +2162,7 @@ build_site_target ()
     fi
   fi
 
-  local MAKE_CMD KEEP=""
+  local MAKE_CMD="" KEEP=""
 
   # Weitere Site desselben Targets (key nach nokey): Gluons clean_output.lua
   # soll die Paketausgabe bin/targets/<board>/<sub>/packages stehen lassen,
