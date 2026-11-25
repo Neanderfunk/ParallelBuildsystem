@@ -532,6 +532,14 @@ build.sh (Hauptprozess, eigene UID)
   Overlay (Meldung im Worker-Log). `build_parallel` legt es vor dem Start der
   Worker an.
 
+- **Eigenes Temp-Verzeichnis** (`TMP` und `TMPDIR` = `.overlays/<t>/tmp`,
+  seit 25.11.2026): `/tmp` teilen sich alle Worker. luarocks 2.2.2 legt dort
+  `luarocks_<name>-<Zufallszahl>` an und würfelt mit `os.time()` als Startwert;
+  zwei Worker in derselben Sekunde bekamen dasselbe Verzeichnis, und luaposix
+  scheiterte auf ath79-generic und x86-64 mit „Failed producing checksum“.
+  luarocks liest `TMP`, OpenWrt setzt `TMPDIR` selbst auf `openwrt/tmp`. Das
+  Verzeichnis geht mit dem Overlay-Verzeichnis weg.
+
 - **Originalpfad**: OpenWrt schreibt absolute Pfade in `.prepared<hash>`;
   unter anderem Pfad würde alles neu gebaut.
 - **eigene UID**: OpenWrt verweigert Builds als root.

@@ -3185,7 +3185,7 @@ start_worker ()
   local W="$OVL_DIR/$TARGET"
 
   ovl_discard_dir "$W"
-  mkdir -p -- "$W/lower" "$W/upper" "$W/work"
+  mkdir -p -- "$W/lower" "$W/upper" "$W/work" "$W/tmp"
 
   echo "Worker startet: $TARGET  (Ausgabe: $W.log)"
 
@@ -3208,6 +3208,17 @@ start_worker ()
     # Verwerfen seines upperdir - fuer die anderen Worker und den naechsten
     # Lauf. Vorher blieb es im upperdir und war mit ihm weg.
     export OVL_SHARE="openwrt/dl"
+    # Eigenes Temp-Verzeichnis je Worker. /tmp teilen sich alle Worker, die
+    # Namespaces trennen nur Benutzer und Mounts. luarocks 2.2.2 (luaposix
+    # und andere Lua-Pakete) legt dort luarocks_<name>-<Zufallszahl> an, mit
+    # math.randomseed(os.time()): zwei Worker im selben Sekundentakt bekommen
+    # dasselbe Verzeichnis, und einer raeumt dem anderen die Dateien weg
+    # (25.11.2026: ath79-generic und x86-64, beide luaposix-6014, "Failed
+    # producing checksum ... syslog.so"). luarocks liest TMP, nicht TMPDIR;
+    # TMPDIR setzt OpenWrt in rules.mk ohnehin auf openwrt/tmp im Overlay.
+    # Beide hier, damit auch Werkzeuge ausserhalb von make nicht kollidieren.
+    # Liegt in $W und geht mit dem Overlay-Verzeichnis weg.
+    export TMP="$W/tmp" TMPDIR="$W/tmp"
     # setsid: eigene Prozessgruppe. Ein Signal an den Worker allein erreichte
     # sein make nicht - das ist ein Kind des Workers. An die Gruppe gerichtet
     # trifft es alles, was der Worker gestartet hat, und nicht den Hauptprozess.
