@@ -239,6 +239,148 @@ git_state ()
 }
 
 
+# Herkunft: Stand von Firmware-Repo, Buildsystem und Gluon, die Pins der
+# Module und Patch-Repos. Fuer build-info.txt (MODE voll, nach dem Bau) und
+# fuer herkunft.txt des laufenden Laufs (soll vor prepare, voll danach).
+print_origin ()
+{
+  local TEMPLATE_NAME="$1"
+  local SITE_CODE="$2"
+  local MODE="${3:-voll}"
+  local MODULE PINNED ACTUAL
+
+  echo "Firmware-Repo:  $(git_state "$SANDBOX_DIR")"
+  echo "Buildsystem:    $(git_state "$BUILDSYS_DIR")"
+  if [ "$MODE" = voll ]; then
+    echo "Gluon:          $(git_state "$GLUON_DIR")"
+  fi
+  if [ -n "$GLUON_COMMIT" ]; then
+    echo "Gluon-Pin:      $GLUON_COMMIT (GLUON_COMMIT in der Konfiguration)"
+  else
+    echo "Gluon-Pin:      keiner, Kopf von origin/${ALL_SITE_GLUON_BRANCHES[0]-?}"
+  fi
+  echo
+  if [ "$MODE" = soll ]; then
+    # Vor prepare stehen die Module noch auf dem alten Stand, ein Vergleich
+    # meldete jede neue Pin als Abweichung. Deshalb nur die Pins der Site.
+    echo "Feed-Pins der Site (modules), Soll; Soll gegen Ist folgt nach prepare:"
+    sed -n 's/^\([A-Z0-9_]*_COMMIT\)=\(.*\)$/\1 \2/p' \
+        "$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/modules" 2>/dev/null \
+      | while read -r VAR PINNED; do
+          printf "  %-30s %s\n" "$VAR" "$PINNED"
+        done
+  else
+    # Verglichen wird gegen den Zweig "base", nicht gegen HEAD: "make update"
+    # legt ueber base den Zweig "patched" mit Gluons eigenen Patches, HEAD
+    # weicht dort also planmaessig ab. Genauso prueft Gluons module_check.sh.
+    echo "Module, Soll (modules) gegen Ist (Zweig base):"
+
+    # In einer Subshell, die modules.sh eingelesen hat: dort stehen die
+    # Soll-Commits als <MODUL>_COMMIT bereit, so wie Gluons eigenes
+    # scripts/module_check.sh sie liest.
+    (
+      cd "$GLUON_DIR" || exit 0
+      export GLUON_SITEDIR="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
+      . scripts/modules.sh 2>/dev/null || exit 0
+
+      for MODULE in $GLUON_MODULES; do
+        VAR="$(echo "$MODULE" | tr '[:lower:]/' '[:upper:]_')_COMMIT"
+        eval "PINNED=\${$VAR:-}"
+        ACTUAL="$(git -C "$GLUON_DIR/$MODULE" rev-parse heads/base 2>/dev/null || echo "-")"
+        PATCHED="$(git -C "$GLUON_DIR/$MODULE" rev-parse HEAD 2>/dev/null || echo "-")"
+
+        if [ "$PINNED" = "$ACTUAL" ]; then
+          if [ "$PATCHED" = "$ACTUAL" ]; then
+            printf "  %-22s %s\n" "$MODULE" "$PINNED"
+          else
+            printf "  %-22s %s  (gepatcht: %s)\n" "$MODULE" "$PINNED" "${PATCHED:0:12}"
+          fi
+        else
+          printf "  %-22s Soll %s\n  %-22s Ist  %s   ABWEICHUNG\n" \
+                 "$MODULE" "${PINNED:-?}" "" "$ACTUAL"
+        fi
+      done
+    )
+  fi
+
+  # Patch-Repos, sofern die Site eine Pin-Datei patchrepos hat (siehe
+  # templates/common/prepare.sh): Soll-Commit aus der Datei gegen den Stand,
+  # den prepare.sh unter patch-repos/<name> ausgecheckt hat.
+  local PIN_FILE="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/patchrepos"
+  if [ -f "$PIN_FILE" ]; then
+    echo
+    if [ "$MODE" = soll ]; then
+      echo "Patch-Repos, Soll (patchrepos):"
+    else
+      echo "Patch-Repos, Soll (patchrepos) gegen Ist (patch-repos/<name>):"
+    fi
+    (
+      PATCHREPOS=""
+      . "$PIN_FILE" 2>/dev/null || exit 0
+      for NAME in $PATCHREPOS; do
+        PREFIX="PATCHREPO_$(printf '%s' "$NAME" | tr 'a-z-' 'A-Z_')"
+        eval "PINNED=\${${PREFIX}_COMMIT:-}"
+        eval "REPO=\${${PREFIX}_REPO:-}"
+        DIR="$SANDBOX_DIR/patch-repos/$NAME"
+        ACTUAL="$(git -C "$DIR" rev-parse HEAD 2>/dev/null || echo "-")"
+        if [ "$MODE" = soll ]; then
+          printf "  %-22s %s\n" "$NAME" "${PINNED:-?}"
+        elif [ "$PINNED" = "$ACTUAL" ]; then
+          if [ -z "$(git -C "$DIR" status --porcelain 2>/dev/null)" ]; then
+            printf "  %-22s %s\n" "$NAME" "$PINNED"
+          else
+            printf "  %-22s %s  (lokale Aenderungen)\n" "$NAME" "$PINNED"
+          fi
+        else
+          printf "  %-22s Soll %s\n  %-22s Ist  %s   ABWEICHUNG\n" \
+                 "$NAME" "${PINNED:-?}" "" "$ACTUAL"
+        fi
+        printf "  %-22s %s\n" "" "${REPO:-?}"
+      done
+    )
+  fi
+}
+
+# Herkunft des laufenden Laufs, live unter images/running/buildinfo/herkunft.txt
+# und damit auf dem Spiegel des images-Verzeichnisses lesbar. build-info.txt
+# entsteht erst, wenn eine Domain fertig ist - viel zu spaet, um einem Lauf
+# anzusehen, ob er den richtigen Stand baut (26112714sta lief ueber eine
+# Stunde mit dem alten Feed-Pin, weil der Pull nicht durchgekommen war).
+# Zweimal geschrieben: "soll" gleich nach dem Zusammenbau der Sites (die Pins
+# laut Konfiguration), "voll" nach prepare (Soll gegen Ist wie in
+# build-info.txt). Module und Patch-Repos stehen dort fuer die erste Domain;
+# sie kommen aus templates/common und sind fuer alle gleich.
+# Darf den Lauf nie aufhalten: Aufruf immer mit "|| true".
+write_run_origin ()
+{
+  local MODE="$1"
+  local DIR="$SANDBOX_DIR/images/running/buildinfo"
+  local OUT="$DIR/herkunft.txt"
+
+  mkdir -p -- "$DIR"
+  {
+    echo "Herkunft des Laufs $SBRANCH"
+    echo "=============================="
+    echo
+    if [ "$MODE" = soll ]; then
+      echo "Stand:          vor prepare, $(date "+%F %T") (Pins laut Konfiguration; Soll gegen Ist folgt nach prepare)"
+    else
+      echo "Stand:          nach prepare, $(date "+%F %T")"
+    fi
+    echo "Lauf seit:      $(date -d "@$BUILD_START_EPOCH" "+%F %T")"
+    echo "Ausgabe:        images-$DATE_SUFFIX"
+    echo "Host:           $(uname -n) ($(uname -sr))"
+    echo "Aufruf:         $BUILD_COMMAND_LINE"
+    echo
+    print_origin "${ALL_SITE_TEMPLATE_NAMES[0]}" "${ALL_SITE_CODES[0]}" "$MODE"
+    echo
+    echo "Targets:        ${BUILD_TARGETS[*]}"
+    echo "Domains:        ${ALL_SITE_CODES[*]}"
+  } > "$OUT.tmp" 2>/dev/null
+  mv -f -- "$OUT.tmp" "$OUT"
+  echo "Herkunft des Laufs ($MODE): $OUT"
+}
+
 # Schreibt die Herkunftsdaten neben die Images. Ohne diese Datei laesst sich
 # hinterher nicht feststellen, aus welchem Stand ein Image entstanden ist -
 # die Konfigurationsdateien daneben zeigen nur den Inhalt, nicht die Version.
@@ -279,77 +421,7 @@ write_build_info ()
     echo "Host:           $(uname -n) ($(uname -sr))"
     echo "Aufruf:         $BUILD_COMMAND_LINE"
     echo
-    echo "Firmware-Repo:  $(git_state "$SANDBOX_DIR")"
-    echo "Buildsystem:    $(git_state "$BUILDSYS_DIR")"
-    echo "Gluon:          $(git_state "$GLUON_DIR")"
-    if [ -n "$GLUON_COMMIT" ]; then
-      echo "Gluon-Pin:      $GLUON_COMMIT (GLUON_COMMIT in der Konfiguration)"
-    else
-      echo "Gluon-Pin:      keiner, Kopf von origin/${ALL_SITE_GLUON_BRANCHES[0]-?}"
-    fi
-    echo
-    # Verglichen wird gegen den Zweig "base", nicht gegen HEAD: "make update"
-    # legt ueber base den Zweig "patched" mit Gluons eigenen Patches, HEAD
-    # weicht dort also planmaessig ab. Genauso prueft Gluons module_check.sh.
-    echo "Module, Soll (modules) gegen Ist (Zweig base):"
-
-    # In einer Subshell, die modules.sh eingelesen hat: dort stehen die
-    # Soll-Commits als <MODUL>_COMMIT bereit, so wie Gluons eigenes
-    # scripts/module_check.sh sie liest.
-    (
-      cd "$GLUON_DIR" || exit 0
-      export GLUON_SITEDIR="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE"
-      . scripts/modules.sh 2>/dev/null || exit 0
-
-      for MODULE in $GLUON_MODULES; do
-        VAR="$(echo "$MODULE" | tr '[:lower:]/' '[:upper:]_')_COMMIT"
-        eval "PINNED=\${$VAR:-}"
-        ACTUAL="$(git -C "$GLUON_DIR/$MODULE" rev-parse heads/base 2>/dev/null || echo "-")"
-        PATCHED="$(git -C "$GLUON_DIR/$MODULE" rev-parse HEAD 2>/dev/null || echo "-")"
-
-        if [ "$PINNED" = "$ACTUAL" ]; then
-          if [ "$PATCHED" = "$ACTUAL" ]; then
-            printf "  %-22s %s\n" "$MODULE" "$PINNED"
-          else
-            printf "  %-22s %s  (gepatcht: %s)\n" "$MODULE" "$PINNED" "${PATCHED:0:12}"
-          fi
-        else
-          printf "  %-22s Soll %s\n  %-22s Ist  %s   ABWEICHUNG\n" \
-                 "$MODULE" "${PINNED:-?}" "" "$ACTUAL"
-        fi
-      done
-    )
-
-    # Patch-Repos, sofern die Site eine Pin-Datei patchrepos hat (siehe
-    # templates/common/prepare.sh): Soll-Commit aus der Datei gegen den Stand,
-    # den prepare.sh unter patch-repos/<name> ausgecheckt hat.
-    local PIN_FILE="$SANDBOX_DIR/assembled/$TEMPLATE_NAME/$SITE_CODE/patchrepos"
-    if [ -f "$PIN_FILE" ]; then
-      echo
-      echo "Patch-Repos, Soll (patchrepos) gegen Ist (patch-repos/<name>):"
-      (
-        PATCHREPOS=""
-        . "$PIN_FILE" 2>/dev/null || exit 0
-        for NAME in $PATCHREPOS; do
-          PREFIX="PATCHREPO_$(printf '%s' "$NAME" | tr 'a-z-' 'A-Z_')"
-          eval "PINNED=\${${PREFIX}_COMMIT:-}"
-          eval "REPO=\${${PREFIX}_REPO:-}"
-          DIR="$SANDBOX_DIR/patch-repos/$NAME"
-          ACTUAL="$(git -C "$DIR" rev-parse HEAD 2>/dev/null || echo "-")"
-          if [ "$PINNED" = "$ACTUAL" ]; then
-            if [ -z "$(git -C "$DIR" status --porcelain 2>/dev/null)" ]; then
-              printf "  %-22s %s\n" "$NAME" "$PINNED"
-            else
-              printf "  %-22s %s  (lokale Aenderungen)\n" "$NAME" "$PINNED"
-            fi
-          else
-            printf "  %-22s Soll %s\n  %-22s Ist  %s   ABWEICHUNG\n" \
-                   "$NAME" "${PINNED:-?}" "" "$ACTUAL"
-          fi
-          printf "  %-22s %s\n" "" "${REPO:-?}"
-        done
-      )
-    fi
+    print_origin "$TEMPLATE_NAME" "$SITE_CODE" voll
     echo
     echo "Targets:        ${TARGETS[*]}"
     echo "Domains:        ${ALL_SITE_CODES[*]}"
@@ -3412,6 +3484,8 @@ build_parallel ()
     echo "Golden tree steht (Fingerabdruck ${GFP:0:16})."
   fi
 
+  write_run_origin voll || true
+
   # Der Hauptprozess wartet jetzt nur noch auf die Worker und meldet sich ab.
   # Blieb seine Statusdatei auf "golden" stehen, verwarf der Collector jede
   # Probe des Parallelbetriebs (Bedingung: niemand in golden/prepare) - im
@@ -3587,6 +3661,7 @@ build_all_images ()
   # Prepare the Gluon tree once, before the first domain. All domains are then
   # built against this state, without resetting or patching again.
   run_prepare
+  write_run_origin voll || true
 
   # The unit of work is one domain x one target. BUILD_ORDER only decides in
   # which order those units are visited, so that both orders can be compared
@@ -4220,5 +4295,8 @@ announce_run_scope
 generate_all_site_configs
 
 GLUON_DIR="$SANDBOX_DIR/gluon"
+
+# Gleich sichtbar, welche Pins dieser Lauf baut (siehe write_run_origin).
+write_run_origin soll || true
 
 build_all_images

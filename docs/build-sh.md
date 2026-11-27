@@ -365,6 +365,7 @@ images/
     .site-seconds                   Bauzeit je Domain
     .status/<main|target>           Phase je Prozess (7.5)
     buildinfo/                      Collector live: <lauf>.metrics.csv, .io.csv, .io-top.csv, .collector.log
+                                    herkunft.txt: Pins und Commits, gleich nach dem Start
     packages/                       Gluon-Pakete
     opkg-2023.2.x/gluon-<sbranch>/<target>/<sub>/   opkg-Feeds
     <template>/<code>/
@@ -389,6 +390,7 @@ build-times.csv                     Zeiten aller Läufe
 | `build-times.csv` | `run_id,timestamp,epoch,build_order,phase,template,site_code,target,seconds,note`; Phasen `run_start`, `prepare`, `download` (je Worker, 7.3), `build`, `finalize`, `run_end` |
 | `.overlays/<target>.log` | Ausgabe eines Workers |
 | `detached.log` | Konsolenausgabe, nur bei `--detach` ohne tmux und screen |
+| `buildinfo/herkunft.txt` | schon während des Laufs: Release, Aufruf, Commits von Firmware-Repo und Buildsystem, Gluon-Pin, Feed-Pins der Site und Patch-Repos. Zuerst gleich nach dem Zusammenbau der Sites (nur Soll), nach prepare noch einmal mit Soll gegen Ist wie in `build-info.txt`. Module und Patch-Repos gelten für die erste Domain. |
 | `buildinfo/<lauf>.summary.txt` | der Kasten vom Laufende (Dauer, Umfang, Erlang, Images, Größen) |
 | `buildinfo/<lauf>.empfehlung.txt` | Empfehlung und Kennzahlen des Collectors (7.6) |
 | `buildinfo/<lauf>.metrics.csv(.gz)` | 1-s-Proben: CPU, iowait, Platte, steal, Phasen, Dirty/Writeback; während des Laufs live als `.csv` |
