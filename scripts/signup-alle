@@ -9,18 +9,27 @@
 #   scripts/signup-alle 02_met 03_rat   nur diese (jeweils mit und ohne -key)
 #   scripts/signup-alle --ab 02_met     ab dieser Zeile weiter
 #   scripts/signup-alle --neu           auch das noch einmal, was schon oben liegt
+#   scripts/signup-alle --multi         Multidomain-Bau (siehe unten)
+#   --baum <verz>  --branch <name>      Bauverzeichnis bzw. Branch fuer diesen Aufruf
 #
 # Normalerweise wird uebersprungen, was auf dem Zielserver schon liegt, und
 # zwar **bevor** gepackt wird. Nach einem Abbruch mitten im Lauf genuegt es
 # daher, das Skript einfach noch einmal zu starten.
 #
-# Die beiden letzten Formen sind fuer den Fall gedacht, dass ein Lauf in der
-# Mitte abgebrochen ist und ein Teil schon oben liegt. Die Liste unten muss
-# dafuer **nicht** angefasst werden - sie beschreibt den Soll-Bestand, nicht
-# den Fortschritt eines einzelnen Laufes.
+# --ab und --neu sind fuer den Fall gedacht, dass ein Lauf in der Mitte
+# abgebrochen ist und ein Teil schon oben liegt. Die Liste unten muss dafuer
+# **nicht** angefasst werden - sie beschreibt den Soll-Bestand, nicht den
+# Fortschritt eines einzelnen Laufes.
 #
 # Was oben eingestellt wird: Zielserver, Bauverzeichnis und Branch. Die
 # auskommentierten Zeilen sind die ueblichen Alternativen.
+#
+# Multidomain (--multi): Bauverzeichnis firmware2025.1.x-multi. Die Liste
+# unten gilt dann nicht, sondern die Varianten unter images-<epoche>/
+# multidomain/ (ffnef-multi, ffnef-multi-key). Die erste nimmt packages/ und
+# opkg-*/ mit. Der Branch kommt aus dem Manifest des Laufs (sysupgrade/
+# <branch>.manifest), --branch nur, wenn dort mehr als eines liegt. Namen
+# hinter --multi und hinter --ab sind Variantennamen.
 #
 # ---------------------------------------------------------------------------
 # Vorflugpruefung
@@ -44,11 +53,17 @@ hier=$(cd "$(dirname "$0")" && pwd)
 nur=""
 ab=""
 neu=0
+multi=0
+baum_opt=""
+branch_opt=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --ab) ab=${2:?--ab braucht eine Domaene}; shift 2 ;;
         --neu) neu=1; shift ;;
-        -h|--hilfe|--help) sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --multi) multi=1; shift ;;
+        --baum) baum_opt=${2:?--baum braucht ein Verzeichnis}; shift 2 ;;
+        --branch) branch_opt=${2:?--branch braucht einen Namen}; shift 2 ;;
+        -h|--hilfe|--help) sed -n '3,/^# ---/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
         -*) echo "unbekannte Option: $1" >&2; exit 2 ;;
         *) nur="$nur $1"; shift ;;
     esac
@@ -154,20 +169,77 @@ domaenen="
 48_rdvw-key 48_rdvw
 "
 
+[ "$multi" = 1 ] && buildtree=firmware2025.1.x-multi
+[ -n "$baum_opt" ] && buildtree=$baum_opt
+
+# Fuer Tests ueberschreibbar; im Betrieb bleibt es beim Pfad unter /home/build.
+images="${SIGNUP_IMAGES:-/home/build/$buildtree/images}"
+cd "$images" || { echo "kein Bauverzeichnis $images" >&2; exit 1; }
+
+lauf=$(ls -d images-* 2>/dev/null | sed 's/^images-//' \
+    | grep -E '^[0-9]+$' | sort -n | tail -1)
+[ -n "$lauf" ] || { echo "kein images-<epoche> in $images" >&2; exit 1; }
+lauf="images-$lauf"
+
+# --- Multidomain: Liste und Branch aus dem Lauf ---------------------------
+if [ "$multi" = 1 ]; then
+    [ -d "$lauf/multidomain" ] \
+        || { echo "$buildtree/$lauf hat kein multidomain/ - kein Multidomain-Bau?" >&2; exit 1; }
+    # Varianten sind die Verzeichnisse mit sysupgrade/. "sort" stellt die
+    # nokey-Variante vor die -key-Variante, sie nimmt die Feeds mit.
+    varianten=$(cd "$lauf/multidomain" && for v in */; do
+        v=${v%/}; [ -d "$v/sysupgrade" ] && printf '%s\n' "$v"; done | sort)
+    [ -n "$varianten" ] \
+        || { echo "keine Variante mit sysupgrade/ unter $lauf/multidomain" >&2; exit 1; }
+    domaenen=""
+    erste=1
+    for v in $varianten; do
+        [ "$erste" = 1 ] && domaenen="${domaenen}multidomain $v packages
+"
+        erste=0
+        domaenen="${domaenen}multidomain $v
+"
+    done
+
+    if [ -n "$branch_opt" ]; then
+        flavour=$branch_opt
+    else
+        erste_v=$(printf '%s\n' "$varianten" | head -1)
+        manifeste=$(cd "$lauf/multidomain/$erste_v/sysupgrade" \
+            && ls -1 -- *.manifest 2>/dev/null | sed 's/\.manifest$//')
+        case "$(printf '%s' "$manifeste" | grep -c .)" in
+            1) flavour=$manifeste ;;
+            0) echo "kein Manifest in $lauf/multidomain/$erste_v/sysupgrade" >&2; exit 1 ;;
+            *) echo "mehrere Manifeste in $lauf/multidomain/$erste_v/sysupgrade:" \
+                   $manifeste "- bitte --branch angeben" >&2; exit 2 ;;
+        esac
+    fi
+else
+    [ -n "$branch_opt" ] && flavour=$branch_opt
+    if [ -d "$lauf/multidomain" ]; then
+        echo "$buildtree/$lauf ist ein Multidomain-Bau - bitte mit --multi aufrufen." >&2
+        exit 2
+    fi
+fi
+
 # --- Auswahl anwenden -----------------------------------------------------
 # "nur" trifft eine Domaene mit und ohne -key, denn wer "02_met" sagt, meint
-# beide Haelften. "--ab" laesst alles vor der genannten Zeile aus.
+# beide Haelften. "--ab" laesst alles vor der genannten Zeile aus. Verglichen
+# wird mit beiden Spalten, im Multidomain-Fall steht der Name in der zweiten.
+passt() { # <site> <sub> <name>
+    [ "$1" = "$3" ] || [ "$1" = "$3-key" ] || [ "$2" = "$3" ] || [ "$2" = "$3-key" ]
+}
 auswahl=""
 gestartet=0
 [ -n "$ab" ] || gestartet=1
 while read -r site sub extra; do
     [ -n "${site:-}" ] || continue
-    [ "$gestartet" = 1 ] || { [ "$site" = "$ab" ] && gestartet=1; }
+    [ "$gestartet" = 1 ] || { { [ "$site" = "$ab" ] || [ "$sub" = "$ab" ]; } && gestartet=1; }
     [ "$gestartet" = 1 ] || continue
     if [ -n "$nur" ]; then
         treffer=0
         for w in $nur; do
-            [ "$site" = "$w" ] || [ "$site" = "$w-key" ] && treffer=1
+            passt "$site" "$sub" "$w" && treffer=1
         done
         [ "$treffer" = 1 ] || continue
     fi
@@ -183,29 +255,30 @@ if [ -z "$auswahl" ]; then
 fi
 domaenen="$auswahl"
 
-# Fuer Tests ueberschreibbar; im Betrieb bleibt es beim Pfad unter /home/build.
-images="${SIGNUP_IMAGES:-/home/build/$buildtree/images}"
-cd "$images" || { echo "kein Bauverzeichnis $images" >&2; exit 1; }
-
-lauf=$(ls -d images-* 2>/dev/null | sed 's/^images-//' \
-    | grep -E '^[0-9]+$' | sort -n | tail -1)
-[ -n "$lauf" ] || { echo "kein images-<epoche> in $images" >&2; exit 1; }
-lauf="images-$lauf"
 echo "Bau: $buildtree/$lauf, Branch $flavour, Ziel $dest"
 
 # --- Vorflugpruefung ------------------------------------------------------
+# Neben den Verzeichnissen auch das Manifest des Branches: fehlt es, scheitert
+# signup erst beim Unterschreiben, und das womoeglich nach den Feeds.
 fehlend=""
 while read -r site sub extra; do
     [ -n "${site:-}" ] || continue
-    [ -d "$lauf/$site/$sub" ] || fehlend="$fehlend  $site/$sub\n"
+    if [ ! -d "$lauf/$site/$sub" ]; then
+        fehlend="$fehlend  $site/$sub\n"
+    elif [ ! -f "$lauf/$site/$sub/sysupgrade/$flavour.manifest" ]; then
+        fehlend="$fehlend  $site/$sub/sysupgrade/$flavour.manifest\n"
+    fi
+    if [ "${extra:-}" = packages ] && [ ! -d "$lauf/packages" ]; then
+        fehlend="$fehlend  packages (fuer $site/$sub)\n"
+    fi
 done <<EOF
 $domaenen
 EOF
 
 if [ -n "$fehlend" ]; then
-    echo "Diese Verzeichnisse fehlen im Bau, nichts wurde hochgeladen:" >&2
-    printf "$fehlend" >&2
-    echo "Entweder ein Tippfehler in der Liste oder der Bau ist unvollstaendig." >&2
+    echo "Diese Verzeichnisse oder Dateien fehlen im Bau, nichts wurde hochgeladen:" >&2
+    printf "$fehlend" | awk '!gesehen[$0]++' >&2
+    echo "Entweder ein Tippfehler in der Liste, ein falscher Branch oder der Bau ist unvollstaendig." >&2
     exit 1
 fi
 
