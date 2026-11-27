@@ -3969,6 +3969,24 @@ prepare_run_state ()
     abort "--resume and --restart contradict each other: one continues the interrupted run, the other throws it away."
   fi
 
+  # --resume-if-unchanged (fuer scripts/bau): fortsetzen, wenn die Eingaben
+  # gleich geblieben sind, sonst neu anfangen. Ein Resume mit geaenderten
+  # Eingaben ginge ohnehin nicht, und wer vorher gepullt hat, will den neuen
+  # Stand bauen.
+  if [ "$RESUME_IF_UNCHANGED" = true ] && [ "$RESUME" != true ] && [ "$RESTART" != true ]; then
+    if [ -d "$RUNNING_DIR" ]; then
+      if [ -f "$RUNNING_DIR/.build-state" ] \
+         && [ "$(sed -n 's/^fingerprint=//p' "$RUNNING_DIR/.build-state")" = "$(build_fingerprint)" ]; then
+        echo "Left-over run with unchanged inputs: resuming it (--resume-if-unchanged)."
+        RESUME=true
+      else
+        echo "Left-over run, but the inputs have changed (or it has no state file): starting afresh (--resume-if-unchanged)."
+        [ -f "$RUNNING_DIR/.build-state" ] && explain_fingerprint_change "$RUNNING_DIR/.build-fingerprint"
+        RESTART=true
+      fi
+    fi
+  fi
+
   if [ "$RESUME" = true ]; then
     if [ ! -d "$RUNNING_DIR" ]; then
       abort "--resume was given, but \"$RUNNING_DIR\" does not exist. There is no interrupted run to resume; without --resume build.sh starts afresh."
@@ -4068,6 +4086,7 @@ detach_build ()
 # den drei Konfigurationsdateien stehen darf.
 RESUME=false
 RESTART=false
+RESUME_IF_UNCHANGED=false
 DETACH=false
 # --force: seriell bauen, obwohl WORKERS > 1 gewollt war und der Parallelbetrieb
 # nicht geht. Ohne bricht der Lauf dann ab, siehe parallel_fallback.
@@ -4086,6 +4105,7 @@ for ARG in "$@"; do
     --detach)   DETACH=true ;;
     --resume)   RESUME=true ;;
     --restart)  RESTART=true ;;
+    --resume-if-unchanged) RESUME_IF_UNCHANGED=true ;;
     --force)    FORCE=true ;;
     --worker=*) WORKER_TARGET="${ARG#--worker=}" ;;
     *)          POSITIONAL_ARGS+=( "$ARG" ) ;;
@@ -4114,6 +4134,10 @@ if (( $# < 3 )); then
   echo "                images/running is removed, and release string and output"
   echo "                directory are formed anew. What the old run had already"
   echo "                built is reported before it is deleted."
+  echo "  --resume-if-unchanged"
+  echo "                Resumes a left-over run if its inputs are unchanged,"
+  echo "                otherwise throws it away and starts afresh. Without a"
+  echo "                left-over run it simply starts. Used by scripts/bau."
   echo "  --force       Builds serially when WORKERS > 1 was asked for (also via"
   echo "                WORKERS=auto) but parallel building is impossible here"
   echo "                (prerequisites missing, too little disk space). Without"

@@ -1,0 +1,195 @@
+#!/bin/bash
+#
+# bau - einen Firmware-Lauf mit einem Aufruf starten: Stand holen, pruefen,
+# bauen. Im Vordergrund dieses Fensters, ohne tmux; Strg-C bricht genau
+# diesen Lauf ab und keinen anderen.
+#
+#   scripts/bau broken      Multidomain 2025.1 (next), Branch broken, <JJMMTTHH>bro
+#   scripts/bau stable      Multidomain 2025.1 (next), Branch stable, <JJMMTTHH>sta
+#   scripts/bau sackgasse   Sackgasse 2021.x, alle aktiven Domains, <JJMMTTHH>sg
+#
+#   --ohne-pull   den Stand nicht holen (etwa um einen abgebrochenen Lauf
+#                 unveraendert fortzusetzen)
+#   --neu         Multidomain: einen liegengebliebenen Lauf auch dann
+#                 verwerfen, wenn er sich fortsetzen liesse
+#
+# Was bau tut:
+#   1. Laeuft in diesem Baum schon ein Bau, bricht es ab. Dann wird auch nicht
+#      gepullt: bash liest ein laufendes Skript stueckweise von der Platte, ein
+#      Pull, der build.sh aendert, brächte den laufenden Lauf durcheinander.
+#   2. Lokale Aenderungen an versionierten Dateien: Abbruch.
+#   3. git pull --ff-only im Konfigurations-Checkout und (Multidomain) im
+#      Buildsystem, danach Vergleich mit dem Stand auf dem Server
+#      (git ls-remote). Am 27.11.2026 kam ein Pull nur bis zu einem Commit vom
+#      Vortag, und der Lauf baute eine Stunde lang den alten Feed-Pin.
+#   4. Multidomain: build.sh --resume-if-unchanged. Ein liegengebliebener Lauf
+#      wird fortgesetzt, wenn sich an den Eingaben nichts geaendert hat, sonst
+#      verworfen und neu begonnen. Sackgasse: scripts/build-local.sh --alle.
+#
+# Welche Pins der Lauf baut, steht gleich nach dem Start im images-Verzeichnis
+# unter running/buildinfo/herkunft.txt (Multidomain).
+#
+# Verzeichnisse, fuer Tests ueberschreibbar:
+#   BAU_MULTI_DIR      (/home/build/firmware2025.1.x-multi)
+#   BAU_SACKGASSE_DIR  (/home/build/sackgasse2021.x)
+# ---------------------------------------------------------------------------
+set -u
+
+# Alles in einer Funktion: bash hat sie dann vollstaendig gelesen, bevor der
+# Pull das Buildsystem - und damit diese Datei - aendern kann.
+main ()
+{
+  local ART="" PULL=true NEU=false ARG
+  for ARG in "$@"; do
+    case "$ARG" in
+      broken|stable|sackgasse) [ -z "$ART" ] || fehler "Nur eine Art angeben (broken, stable oder sackgasse)."; ART="$ARG" ;;
+      --ohne-pull) PULL=false ;;
+      --neu)       NEU=true ;;
+      -h|--help)   hilfe; exit 0 ;;
+      *)           fehler "Unbekanntes Argument \"$ARG\". Aufruf: bau broken|stable|sackgasse [--ohne-pull] [--neu]" ;;
+    esac
+  done
+  [ -n "$ART" ] || { hilfe; exit 1; }
+
+  local BUILDSYS_DIR
+  BUILDSYS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+  local DIR PROZESS DOMAINS=""
+  case "$ART" in
+    broken)    DIR="${BAU_MULTI_DIR:-/home/build/firmware2025.1.x-multi}"; DOMAINS=domains-multi-bro.conf; PROZESS=build.sh ;;
+    stable)    DIR="${BAU_MULTI_DIR:-/home/build/firmware2025.1.x-multi}"; DOMAINS=domains-multi.conf;     PROZESS=build.sh ;;
+    sackgasse) DIR="${BAU_SACKGASSE_DIR:-/home/build/sackgasse2021.x}";                                PROZESS=build-local.sh ;;
+  esac
+
+  [ -d "$DIR/.git" ] || fehler "$DIR ist kein Git-Checkout."
+  [ -O "$DIR/.git" ] || fehler "$DIR gehoert $(stat -c %U "$DIR/.git"), nicht $(id -un). Als $(stat -c %U "$DIR/.git") starten."
+
+  # 1. Laeuft hier schon etwas?
+  local LAUFEND
+  if [ "$ART" = sackgasse ]; then
+    # build-local.sh haelt build.lock, solange der docker-Client laeuft; der
+    # Prozess selbst heisst nach dem exec "docker".
+    if [ -e "$DIR/build.lock" ] && ! flock -n "$DIR/build.lock" true; then
+      LAUFEND="build.lock gesperrt"
+    else
+      LAUFEND=""
+    fi
+  else
+    LAUFEND="$(laufende_baue "$PROZESS" "$DIR")"
+  fi
+  if [ -n "$LAUFEND" ]; then
+    echo "In $DIR laeuft schon ein Bau ($PROZESS: $LAUFEND)." >&2
+    echo "Nichts gestartet und nichts gepullt. Abbrechen geht nur in dem Fenster, in dem er laeuft (Strg-C)." >&2
+    exit 1
+  fi
+
+  # 2./3. Stand holen
+  local -a REPOS=( "$DIR" )
+  [ "$ART" != sackgasse ] && REPOS+=( "$BUILDSYS_DIR" )
+  local R
+  for R in "${REPOS[@]}"; do
+    sauber "$R"
+  done
+  if [ "$PULL" = true ]; then
+    if [ "$ART" != sackgasse ] && [ -n "$(laufende_baue build.sh "")" ]; then
+      fehler "Irgendwo auf diesem Host laeuft build.sh (PID $(laufende_baue build.sh "")). Das Buildsystem jetzt zu pullen, braechte den laufenden Lauf durcheinander. Erst nach dessen Ende bauen, oder mit --ohne-pull."
+    fi
+    for R in "${REPOS[@]}"; do
+      holen "$R"
+    done
+  else
+    echo "--ohne-pull: Stand wird nicht geholt."
+  fi
+
+  echo
+  stand "$DIR" "Konfiguration"
+  [ "$ART" != sackgasse ] && stand "$BUILDSYS_DIR" "Buildsystem"
+  local PIN
+  PIN="$(sed -n 's/^PACKAGES_NEANDERFUNK_COMMIT=//p' "$DIR/templates/common/modules" 2>/dev/null | head -n 1)"
+  [ -n "$PIN" ] && printf '  %-14s %s\n' "Feed-Pin" "$PIN"
+  echo
+
+  cd "$DIR" || fehler "cd $DIR"
+
+  # 4. Bauen
+  if [ "$ART" = sackgasse ]; then
+    local SB="${SBRANCH:-$(date +%y%m%d%H)sg}"
+    [ -e "images/$SB" ] && fehler "images/$SB gibt es schon. Eine Stunde warten oder SBRANCH=<name> davorsetzen."
+    echo "Sackgasse: SBRANCH=$SB, RELBRANCH=sackgasse, alle aktiven Domains. Log zusaetzlich in $DIR/build-alle.log"
+    echo
+    exec sg docker -c "set -o pipefail; SBRANCH=$SB RELBRANCH=sackgasse scripts/build-local.sh --alle 2>&1 | tee build-alle.log"
+  fi
+
+  local MODUS=--resume-if-unchanged
+  [ "$NEU" = true ] && MODUS=--restart
+  echo "Start: $BUILDSYS_DIR/build.sh $MODUS build.conf targets.conf $DOMAINS"
+  echo
+  exec "$BUILDSYS_DIR/build.sh" "$MODUS" build.conf targets.conf "$DOMAINS"
+}
+
+hilfe ()
+{
+  sed -n '3,/^# ---/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'
+}
+
+fehler ()
+{
+  echo "bau: $*" >&2
+  exit 1
+}
+
+# PIDs der Prozesse namens $1, deren Arbeitsverzeichnis $2 ist (leer: alle).
+# Nach Prozessname (pgrep -x), nicht nach Kommandozeile: pgrep -f faende sich
+# sonst selbst. /proc/<pid>/cwd ist nur fuer eigene Prozesse lesbar - gebaut
+# wird immer als derselbe Benutzer.
+laufende_baue ()
+{
+  local NAME="$1" WO="$2" P
+  local -a TREFFER=()
+  for P in $(pgrep -x -- "$NAME" 2>/dev/null); do
+    if [ -z "$WO" ] || [ "$(readlink "/proc/$P/cwd" 2>/dev/null)" = "$WO" ]; then
+      TREFFER+=( "$P" )
+    fi
+  done
+  echo "${TREFFER[*]-}"
+}
+
+sauber ()
+{
+  local R="$1" AENDERUNGEN
+  AENDERUNGEN="$(git -C "$R" status --porcelain --untracked-files=no)"
+  if [ -n "$AENDERUNGEN" ]; then
+    echo "bau: Lokale Aenderungen an versionierten Dateien in $R:" >&2
+    printf '%s\n' "$AENDERUNGEN" | sed 's/^/  /' >&2
+    echo "Die gehoeren nicht auf den Buildhost (Hostspezifisches in build.local.conf). Ansehen: git -C $R diff ; verwerfen: git -C $R checkout -- <datei>" >&2
+    exit 1
+  fi
+}
+
+holen ()
+{
+  local R="$1" BRANCH OBEN HIER VERSUCH
+  BRANCH="$(git -C "$R" symbolic-ref --short -q HEAD)" || fehler "$R: kein Branch ausgecheckt (detached HEAD)."
+  echo "== $R ($BRANCH): git pull --ff-only"
+  git -C "$R" pull --ff-only || fehler "$R: git pull --ff-only gescheitert (siehe oben)."
+  for VERSUCH in 1 2; do
+    OBEN="$(git -C "$R" ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
+    HIER="$(git -C "$R" rev-parse HEAD)"
+    [ -n "$OBEN" ] || fehler "$R: Branch $BRANCH auf origin nicht gefunden."
+    [ "$OBEN" = "$HIER" ] && return 0
+    if [ "$VERSUCH" = 1 ]; then
+      echo "   Server meldet $OBEN, hier ist $HIER - noch einmal holen."
+      sleep 5
+      git -C "$R" pull --ff-only || fehler "$R: zweites git pull --ff-only gescheitert."
+    fi
+  done
+  fehler "$R: nach dem Pull ist HEAD $HIER, auf dem Server steht $BRANCH auf $OBEN. Nicht gebaut."
+}
+
+stand ()
+{
+  printf '  %-14s %s\n' "$2" "$(git -C "$1" log -1 --format='%H %s' | cut -c1-110)"
+}
+
+main "$@"
+exit

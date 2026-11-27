@@ -23,7 +23,7 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 ## 2. Aufruf und Optionen
 
 ```
-<buildsystem>/build.sh <build.conf> <targets.conf> <domains.conf> [target …] [--resume | --restart] [--force] [--detach]
+<buildsystem>/build.sh <build.conf> <targets.conf> <domains.conf> [target …] [--resume | --restart | --resume-if-unchanged] [--force] [--detach]
 ```
 
 | Teil | Bedeutung |
@@ -34,6 +34,7 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
 | `[target …]` | überschreibt `GLUON_TARGETS`, für einzelne Testbauten; jedes muss in `targets.conf` stehen (aktiv oder mit `-`), sonst sofort Abbruch |
 | `--resume` | abgebrochenen Lauf fortsetzen: nur Fehlendes bauen, Release-String und Ausgabeverzeichnis bleiben |
 | `--restart` | übrig gebliebenen Lauf verwerfen (`images/running` löschen) und neu anfangen |
+| `--resume-if-unchanged` | übrig gebliebenen Lauf fortsetzen, wenn seine Eingaben (Fingerabdruck, 5) gleich sind, sonst verwerfen und neu anfangen; ohne Rest einfach starten. So startet `scripts/bau`. |
 | `--force` | seriell bauen, obwohl `WORKERS` > 1 gewollt war und der Parallelbetrieb nicht geht (siehe 7.7, 7.9); ohne → Abbruch am Anfang |
 | `--detach` | abgekoppelt in einer tmux-Sitzung laufen und gleich verbinden, siehe unten |
 | *(keins von beiden)* | liegt noch ein `images/running` herum → Abbruch mit Hinweis |
@@ -47,8 +48,9 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
   entstehen `gluon/`, `images/`, `assembled/` und die Metriken; aus diesem
   Repo kommen nur `build.sh`, `esign`, `scripts/` und `tests/`. Fehlen
   `templates/` oder `patches/` im aktuellen Verzeichnis → Abbruch.
-- Ein Lauf dauert Stunden und darf nicht an der SSH-Sitzung hängen. Deshalb
-  mit `--detach` starten: build.sh startet sich in einer tmux-Sitzung
+- **Ein Aufruf für alles: `scripts/bau`** (siehe unten). Wer build.sh von
+  Hand startet: Ein Lauf dauert Stunden und darf nicht an der SSH-Sitzung
+  hängen, wenn die Verbindung unsicher ist. Dafür gibt es `--detach`: build.sh startet sich in einer tmux-Sitzung
   `build-<verzeichnis>` neu (ohne tmux in screen, ohne beides per `setsid`
   mit Ausgabe in `detached.log`) und verbindet sofort. Lösen mit Strg-b d,
   wieder verbinden mit `tmux attach -t build-<verzeichnis>`. Nach dem Ende
@@ -62,9 +64,39 @@ wir-horst und einem lokalen Messplatz, siehe Abschnitt 8.
   Ein `&` am Ende hilft nicht: Der Prozess bleibt Kind der Shell und stirbt
   mit ihr (SIGHUP). So endeten die ersten beiden Anläufe von 26091920sta.
   Das frühere `long-server-task.sh` schützte davor ebenfalls nicht und ist
-  entfallen.
+  entfallen. Bei stabiler Verbindung lieber ohne tmux im Vordergrund: Laufen
+  zwei Bäume gleichzeitig, trifft ein `tmux kill-session` sonst leicht den
+  falschen Lauf.
 - build.sh liest nie von der Tastatur (stdin ist `/dev/null`): Ein Werkzeug,
   das doch etwas fragen will, scheitert sofort, statt den Lauf anzuhalten.
+
+### scripts/bau
+
+```
+<buildsystem>/scripts/bau broken|stable|sackgasse [--ohne-pull] [--neu]
+```
+
+Startet einen Lauf mit einem Aufruf, im Vordergrund des eigenen Fensters
+(Strg-C bricht genau diesen Lauf ab):
+
+1. Läuft im Baum schon ein Bau (`build.sh` mit diesem Arbeitsverzeichnis,
+   bei der Sackgasse `build.lock`), bricht es ab, ohne etwas anzufassen.
+   Gepullt wird auch dann nicht, wenn irgendwo auf dem Host `build.sh`
+   läuft: bash liest ein laufendes Skript stückweise, ein Pull, der
+   `build.sh` ändert, brächte den Lauf durcheinander.
+2. Lokale Änderungen an versionierten Dateien → Abbruch.
+3. `git pull --ff-only` im Konfigurations-Checkout und im Buildsystem, danach
+   Vergleich mit `git ls-remote`: Steht HEAD nicht auf dem Stand des
+   Servers, wird nicht gebaut.
+4. Zeigt Konfigurations- und Buildsystem-Commit und den Feed-Pin, dann
+   `build.sh --resume-if-unchanged` (mit `--neu`: `--restart`).
+
+`broken` und `stable` bauen den Multidomain-Baum mit `domains-multi-bro.conf`
+bzw. `domains-multi.conf`, `sackgasse` den 2021.x-Baum mit
+`scripts/build-local.sh --alle` (SBRANCH `<JJMMTTHH>sg`, oder `SBRANCH=`
+davor). Die Verzeichnisse stehen im Skript (`BAU_MULTI_DIR`,
+`BAU_SACKGASSE_DIR`). Welche Pins der Lauf baut, steht gleich nach dem Start
+in `images/running/buildinfo/herkunft.txt` (6).
 
 Beispiele:
 
