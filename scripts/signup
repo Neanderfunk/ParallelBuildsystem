@@ -9,10 +9,13 @@
 #   baum      Bauverzeichnis unter /home/build, z. B. firmware2025.1.x
 #   release   Branch des Manifests: stable, broken, sackgasse
 #   site      Verzeichnis im Bau, z. B. 02_met oder 02_met-key
-#   subsite   Verzeichnis darunter, immer die site OHNE "-key"
+#   subsite   Verzeichnis darunter, immer die site OHNE "-key"; "-" fuer
+#             Baeume ohne Unterverzeichnis je Site (Sackgasse 2021.x)
 #   packages  wenn gesetzt, zusaetzlich packages/ und opkg-*/ hochladen
 #
 # Umgebung:
+#   SIGNUP_LAUF  Lauf unter images/ (z. B. images-1795723603 oder
+#                24112323sackgasse). Ohne: das juengste images-<epoche>.
 #   SIGNUP_TMP   wohin die Archive zwischengelegt werden (Vorgabe /var/tmp/signup)
 #   SIGNUP_VORHANDEN  Dateiliste des Zielservers, eine je Zeile. Ist sie
 #                gesetzt, fragt signup den Server nicht selbst - signup-alle
@@ -50,7 +53,8 @@
 #      BEVOR gepackt wird. Das Packen ist der teure Teil: ein Domaenen-
 #      verzeichnis sind mehrere Gigabyte, und nach einem Abbruch mitten im
 #      Lauf musste man bisher alles noch einmal durchpacken, auch das laengst
-#      Hochgeladene. Erkannt wird es am Muster <site>-<subsite>-*-<lauf>, der
+#      Hochgeladene. Erkannt wird es am Muster <site>-<subsite>-<zeit>-<lauf>,
+#      ohne Subsite <site>-<zeit>-<lauf>; der
 #      Zeitstempel im Namen bleibt also unerheblich.
 #      Antwortet der Server nicht, wird NICHTS uebersprungen. Im Zweifel
 #      lieber doppelt hochladen als eine Luecke hinterlassen.
@@ -90,29 +94,45 @@ fi
 schon_oben() {
     [ "${SIGNUP_NEU:-0}" = 1 ] && return 1
     [ -n "$vorhanden" ] || return 1
-    muster="^$SITE-$SUBSITE-.*-$LASTIMAGE\\.$(printf '%s' "$1" | sed 's/\./\\./g')$"
+    # Zwischen Name und Lauf steht genau der Zeitstempel. Mit ".*" an seiner
+    # Stelle hielte "multidomain-ffnef-multi" das Archiv von
+    # "multidomain-ffnef-multi-key" fuer das eigene.
+    muster="^$NAMEKOPF-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}-$LASTIMAGE\\.$(printf '%s' "$1" | sed 's/\./\\./g')$"
     printf '%s\n' "$vorhanden" | grep -qE "$muster"
 }
 
 mkdir -p "$UPLD" || ende "kann $UPLD nicht anlegen"
 
-cd "/home/build/$BRANCH/images" || ende "kein Bauverzeichnis /home/build/$BRANCH/images"
+# Fuer Tests ueberschreibbar, wie in signup-alle.
+BASIS=${SIGNUP_IMAGES:-/home/build/$BRANCH/images}
+cd "$BASIS" || ende "kein Bauverzeichnis $BASIS"
 
+if [ -n "${SIGNUP_LAUF:-}" ]; then
+    LASTIMAGE=$SIGNUP_LAUF
+    [ -d "$LASTIMAGE" ] || ende "Lauf $LASTIMAGE fehlt in $BASIS"
+else
 # Das zuletzt fertiggestellte images-Verzeichnis. Sortiert wird nach der
 # Epoche hinter dem Bindestrich, nicht nach dem ganzen Namen: "sort -n" auf
 # "images-179..." liest alles als 0 und entscheidet dann nach Zufall.
 LASTIMAGE=$(ls -d images-* 2>/dev/null \
     | sed 's/^images-//' | grep -E '^[0-9]+$' | sort -n | tail -1)
-[ -n "$LASTIMAGE" ] || ende "kein images-<epoche> in /home/build/$BRANCH/images"
+[ -n "$LASTIMAGE" ] || ende "kein images-<epoche> in $BASIS"
 LASTIMAGE="images-$LASTIMAGE"
+fi
 
+if [ "$SUBSITE" = - ]; then
+    NAMEKOPF=$SITE
+    ZIEL="$LASTIMAGE/$SITE"
+else
+    NAMEKOPF="$SITE-$SUBSITE"
+    ZIEL="$LASTIMAGE/$SITE/$SUBSITE"
+fi
 START=$(date +%Y-%m-%d-%H%M)
-NAME="$SITE-$SUBSITE-$START-$LASTIMAGE"
+NAME="$NAMEKOPF-$START-$LASTIMAGE"
 
 # Raeumt in jedem Fall auf: regulaeres Ende, Fehler, Ctrl-C, SIGTERM.
 trap 'rm -f "$UPLD/$NAME".*' EXIT INT TERM
 
-ZIEL="$LASTIMAGE/$SITE/$SUBSITE"
 cd "./$ZIEL" || ende "Verzeichnis fehlt: $ZIEL  (Tippfehler im Aufrufer? Domaene nicht gebaut?)"
 
 /usr/bin/sign dummy "./sysupgrade/$RELEASE.manifest" \

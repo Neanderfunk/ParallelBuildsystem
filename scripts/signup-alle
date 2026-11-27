@@ -10,7 +10,9 @@
 #   scripts/signup-alle --ab 02_met     ab dieser Zeile weiter
 #   scripts/signup-alle --neu           auch das noch einmal, was schon oben liegt
 #   scripts/signup-alle --multi         Multidomain-Bau (siehe unten)
+#   scripts/signup-alle --sackgasse     Sackgassen-Bau 2021.x (siehe unten)
 #   --baum <verz>  --branch <name>      Bauverzeichnis bzw. Branch fuer diesen Aufruf
+#   --lauf <name>                       diesen Lauf statt des juengsten
 #
 # Normalerweise wird uebersprungen, was auf dem Zielserver schon liegt, und
 # zwar **bevor** gepackt wird. Nach einem Abbruch mitten im Lauf genuegt es
@@ -30,6 +32,15 @@
 # opkg-*/ mit. Der Branch kommt aus dem Manifest des Laufs (sysupgrade/
 # <branch>.manifest), --branch nur, wenn dort mehr als eines liegt. Namen
 # hinter --multi und hinter --ab sind Variantennamen.
+#
+# Sackgasse (--sackgasse): Bauverzeichnis sackgasse2021.x, Branch sackgasse.
+# Der Bau liegt flach als images/<SBRANCH>/<site>/, ohne images-<epoche>,
+# ohne Unterverzeichnis je Site und ohne packages/. Juengster Lauf ist das
+# hoechste <SBRANCH>, in dem ein sysupgrade/sackgasse.manifest liegt; ein
+# broken-Testbau im selben Baum zaehlt also nicht. Die Liste unten gilt auch
+# hier nicht, hochgeladen werden alle Sites des Laufs. Namen hinter
+# --sackgasse und --ab sind Domaenen wie sonst auch (02_met trifft 02_met
+# und 02_met-key).
 #
 # ---------------------------------------------------------------------------
 # Vorflugpruefung
@@ -54,6 +65,8 @@ nur=""
 ab=""
 neu=0
 multi=0
+sackgasse=0
+lauf_opt=""
 baum_opt=""
 branch_opt=""
 while [ $# -gt 0 ]; do
@@ -61,6 +74,8 @@ while [ $# -gt 0 ]; do
         --ab) ab=${2:?--ab braucht eine Domaene}; shift 2 ;;
         --neu) neu=1; shift ;;
         --multi) multi=1; shift ;;
+        --sackgasse) sackgasse=1; shift ;;
+        --lauf) lauf_opt=${2:?--lauf braucht einen Namen}; shift 2 ;;
         --baum) baum_opt=${2:?--baum braucht ein Verzeichnis}; shift 2 ;;
         --branch) branch_opt=${2:?--branch braucht einen Namen}; shift 2 ;;
         -h|--hilfe|--help) sed -n '3,/^# ---/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
@@ -169,17 +184,45 @@ domaenen="
 48_rdvw-key 48_rdvw
 "
 
+if [ "$multi" = 1 ] && [ "$sackgasse" = 1 ]; then
+    echo "--multi und --sackgasse schliessen sich aus." >&2
+    exit 2
+fi
 [ "$multi" = 1 ] && buildtree=firmware2025.1.x-multi
+if [ "$sackgasse" = 1 ]; then
+    buildtree=sackgasse2021.x
+    flavour=sackgasse
+fi
 [ -n "$baum_opt" ] && buildtree=$baum_opt
 
 # Fuer Tests ueberschreibbar; im Betrieb bleibt es beim Pfad unter /home/build.
 images="${SIGNUP_IMAGES:-/home/build/$buildtree/images}"
 cd "$images" || { echo "kein Bauverzeichnis $images" >&2; exit 1; }
 
-lauf=$(ls -d images-* 2>/dev/null | sed 's/^images-//' \
-    | grep -E '^[0-9]+$' | sort -n | tail -1)
-[ -n "$lauf" ] || { echo "kein images-<epoche> in $images" >&2; exit 1; }
-lauf="images-$lauf"
+if [ -n "$lauf_opt" ]; then
+    lauf=$lauf_opt
+    [ -d "$lauf" ] || { echo "Lauf $lauf fehlt in $images" >&2; exit 1; }
+elif [ "$sackgasse" = 1 ]; then
+    # Hoechster Release-Name mit Sackgassen-Manifest. Die Namen beginnen mit
+    # JJMMTTHH, die Sortierung nach Text ist also die zeitliche.
+    lauf=$(for d in [0-9]*/; do
+        d=${d%/}
+        for m in "$d"/*/sysupgrade/sackgasse.manifest; do
+            [ -f "$m" ] && { printf '%s\n' "$d"; break; }
+        done
+    done | sort | tail -1)
+    [ -n "$lauf" ] || { echo "kein Sackgassen-Lauf (<SBRANCH>/<site>/sysupgrade/sackgasse.manifest) in $images" >&2; exit 1; }
+else
+    lauf=$(ls -d images-* 2>/dev/null | sed 's/^images-//' \
+        | grep -E '^[0-9]+$' | sort -n | tail -1)
+    [ -n "$lauf" ] || { echo "kein images-<epoche> in $images" >&2; exit 1; }
+    lauf="images-$lauf"
+fi
+# signup soll genau diesen Lauf nehmen, nicht selbst noch einmal suchen.
+export SIGNUP_LAUF="$lauf"
+
+# Verzeichnis einer Zeile; "-" als zweite Spalte heisst: kein Unterverzeichnis.
+pfad() { if [ "$2" = - ]; then printf '%s' "$lauf/$1"; else printf '%s' "$lauf/$1/$2"; fi; }
 
 # --- Multidomain: Liste und Branch aus dem Lauf ---------------------------
 if [ "$multi" = 1 ]; then
@@ -214,6 +257,16 @@ if [ "$multi" = 1 ]; then
                    $manifeste "- bitte --branch angeben" >&2; exit 2 ;;
         esac
     fi
+elif [ "$sackgasse" = 1 ]; then
+    [ -n "$branch_opt" ] && flavour=$branch_opt
+    sites=$(cd "$lauf" && for v in */; do
+        v=${v%/}; [ -d "$v/sysupgrade" ] && printf '%s\n' "$v"; done | sort)
+    [ -n "$sites" ] || { echo "keine Site mit sysupgrade/ unter $lauf" >&2; exit 1; }
+    domaenen=""
+    for v in $sites; do
+        domaenen="${domaenen}$v -
+"
+    done
 else
     [ -n "$branch_opt" ] && flavour=$branch_opt
     if [ -d "$lauf/multidomain" ]; then
@@ -263,10 +316,11 @@ echo "Bau: $buildtree/$lauf, Branch $flavour, Ziel $dest"
 fehlend=""
 while read -r site sub extra; do
     [ -n "${site:-}" ] || continue
-    if [ ! -d "$lauf/$site/$sub" ]; then
-        fehlend="$fehlend  $site/$sub\n"
-    elif [ ! -f "$lauf/$site/$sub/sysupgrade/$flavour.manifest" ]; then
-        fehlend="$fehlend  $site/$sub/sysupgrade/$flavour.manifest\n"
+    d=$(pfad "$site" "$sub")
+    if [ ! -d "$d" ]; then
+        fehlend="$fehlend  ${d#"$lauf"/}\n"
+    elif [ ! -f "$d/sysupgrade/$flavour.manifest" ]; then
+        fehlend="$fehlend  ${d#"$lauf"/}/sysupgrade/$flavour.manifest\n"
     fi
     if [ "${extra:-}" = packages ] && [ ! -d "$lauf/packages" ]; then
         fehlend="$fehlend  packages (fuer $site/$sub)\n"
